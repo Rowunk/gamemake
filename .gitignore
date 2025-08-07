@@ -1,0 +1,6 @@
+# build & coverage
+.v8-coverage/
+dist/
+# OS/editor
+.DS_Store
+*.swp

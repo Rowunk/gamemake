@@ -1,0 +1,16 @@
+{
+  "name": "gamemake",
+  "version": "0.0.1",
+  "description": "M0 — core math + slab allocator for a browser-native game engine (no runtime deps).",
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "cov": "make cov",
+    "clean": "make clean"
+  },
+  "engines": { "node": ">=18" },
+  "license": "UNLICENSED",
+  "keywords": ["webgpu", "game-engine", "ecs", "math", "allocator"],
+  "author": "",
+  "repository": { "type": "git", "url": "" }
+}
