@@ -1,35 +1,111 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
+  <link rel="icon" href="data:,">
   <meta charset="utf-8" />
-  <title>M1 — Clear Pass (WebGPU → WebGL2 fallback)</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Gamemake · Demos</title>
   <style>
-    html, body { height: 100%; margin: 0; background: #111; }
-    #wrap { position: fixed; inset: 0; display: grid; place-items: center; }
-    canvas { width: 90vmin; height: 60vmin; border: 1px solid #333; background: #000; }
-    #log { position: fixed; left: 8px; bottom: 8px; font: 12px/1.4 monospace; color: #9f9; white-space: pre-wrap; }
-    #hud-root {
-      position: fixed; top: 8px; left: 8px; min-width: 260px; max-width: 40vw;
-      background: rgba(0,0,0,0.7); color: #ddd; border: 1px solid #333; border-radius: 8px;
-      padding: 10px; font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    :root { color-scheme: dark; }
+    html, body { margin:0; background:#0b0b0f; color:#d7dde5; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Fira Sans", "Droid Sans", Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", sans-serif; }
+    header { padding: 24px 20px 8px; }
+    h1 { margin:0 0 6px; font-size: 20px; }
+    p.sub { margin:0; opacity:.8; font-size: 13px; }
+    main { padding: 12px 20px 28px; display:grid; gap:18px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); align-items:start; }
+    section { background: rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); border-radius:12px; padding:14px; }
+    h2 { font-size:14px; margin:0 0 10px; letter-spacing:.3px; opacity:.9; }
+    ul { list-style:none; padding:0; margin:0; display:grid; gap:8px; }
+    a.demo {
+      display:flex; justify-content:space-between; align-items:center;
+      padding:10px 12px; border-radius:10px; text-decoration:none; color:#d7dde5;
+      background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.06);
     }
-    #hud-root .hud-title { font-weight: 700; color: #9cf; margin-bottom: 2px; }
-    #hud-root .hud-name { font-weight: 600; margin-bottom: 8px; }
-    #hud-root .hud-section { margin-top: 6px; font-weight: 600; color: #ace; }
-    #hud-root .hud-features { margin: 4px 0 0 16px; padding: 0; }
-    #hud-root .hud-features li { margin: 2px 0; }
-    #hud-root .hud-limits { border-collapse: collapse; margin-top: 4px; }
-    #hud-root .hud-limits td { padding: 2px 6px; }
-    #hud-root .hud-limits .k { color: #aaa; }
-    #hud-root .hud-hint { margin-top: 6px; color: #aaa; }
-    #hud-root.hidden { display: none; }
+    a.demo:hover { background:rgba(255,255,255,0.06); border-color:rgba(255,255,255,0.12); }
+    .tag { font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; padding:2px 6px; border-radius:999px; border:1px solid rgba(255,255,255,.15); opacity:.9; }
+    .gpu { color:#9ecbff; border-color: rgba(158,203,255,.35); }
+    .gl  { color:#b6f0a7; border-color: rgba(182,240,167,.35); }
+    .auto { color:#ffd59e; border-color: rgba(255,213,158,.35); }
+
+    .disabled { opacity:.45; pointer-events:none; }
+    footer { padding: 16px 20px 28px; font-size:12px; opacity:.8; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    #env { margin-top:10px; font-size:12px; opacity:.85; }
   </style>
 </head>
 <body>
-  <div id="wrap"><canvas id="viewport" width="1024" height="640"></canvas></div>
-  <div id="hud-root" class="hidden"></div>
-  <pre id="log"></pre>
-  <script type="module" src="../src/m1_clear.js"></script>
+  <header>
+    <h1>Gamemake · Demos</h1>
+    <p class="sub">Small scenes showing the rendering stack. Links marked WebGPU require a WebGPU-enabled browser.</p>
+    <div id="env">Detecting environment…</div>
+  </header>
+
+  <main>
+    <section>
+      <h2>Module 1</h2>
+      <ul>
+        <li>
+          <a class="demo" href="demos/clear.html" title="Clear color (auto-selects WebGPU/WebGL2)">
+            <span>M1 · Clear</span>
+            <span class="tag auto">auto</span>
+          </a>
+        </li>
+        <li>
+          <a class="demo" href="demos/triangle_webgl2.html" title="Basic triangle in WebGL2">
+            <span>M1 · Triangle</span>
+            <span class="tag gl">WebGL2</span>
+          </a>
+        </li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Module 2</h2>
+      <ul>
+        <li>
+          <a class="demo" data-requires="webgpu" href="demos/cube_webgpu.html" title="Indexed cube, depth test (WebGPU)">
+            <span>M2 · Indexed Cube + Depth</span>
+            <span class="tag gpu">WebGPU</span>
+          </a>
+        </li>
+        <li>
+          <a class="demo" data-requires="webgpu" href="demos/textured_webgpu.html" title="Textured quad (WebGPU)">
+            <span>M2 · Textured Quad</span>
+            <span class="tag gpu">WebGPU</span>
+          </a>
+        </li>
+        <li>
+          <a class="demo" href="demos/textured_webgl2.html" title="Textured quad (WebGL2)">
+            <span>M2 · Textured Quad</span>
+            <span class="tag gl">WebGL2</span>
+          </a>
+        </li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    Served from <code>/public/index.html</code>. If something 404s, make sure you’re running a static server at the repo root (e.g. <code>python3 -m http.server 8000</code>) and not inside <code>/public</code>.
+  </footer>
+
+  <script>
+    // Tiny capability check → annotate WebGPU/WebGL2 availability and disable GPU-only links if needed.
+    (function () {
+      const hasWebGPU = !!(navigator.gpu);
+      const canvas = document.createElement('canvas');
+      const hasWebGL2 = !!(canvas && canvas.getContext && canvas.getContext('webgl2'));
+
+      const env = document.getElementById('env');
+      env.textContent =
+        `WebGPU: ${hasWebGPU ? 'available ✅' : 'not detected ❌'} · ` +
+        `WebGL2: ${hasWebGL2 ? 'available ✅' : 'not detected ❌'}`;
+
+      if (!hasWebGPU) {
+        document.querySelectorAll('[data-requires="webgpu"]').forEach(a => {
+          a.classList.add('disabled');
+          a.title += ' (disabled: WebGPU not detected)';
+        });
+      }
+    })();
+  </script>
 </body>
 </html>

@@ -4,6 +4,10 @@
   "description": "M0 — core math + slab allocator for a browser-native game engine (no runtime deps).",
   "type": "module",
   "scripts": {
+    "start": "python3 -m http.server 8000",
+    "start:open": "npm run start --silent & sleep 1; (xdg-open http://localhost:8000/public/ || open http://localhost:8000/public/ || start http://localhost:8000/public/ || true)",
+    "serve": "make serve",
+    "serve:open": "make serve-open",
     "test": "node --test",
     "cov": "make cov",
     "clean": "make clean"

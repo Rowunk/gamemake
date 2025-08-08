@@ -1,138 +1,94 @@
-// src/demos/textured_quad.js
-// Minimal WebGPU textured quad demo using our M2b pipeline utilities.
-// Zero external deps; generates a checkerboard at runtime.
+// Simple textured quad (procedural 2x2 checker) using WebGPU.
+// Expects <canvas id="gfx">.
 
-import { buildTexture2DPipelineDescriptor } from '../gfx/pipeline_texture2d.js';
-import { createTexturedQuadGeometry } from '../gfx/mesh_quad.js';
-import { makeTextureBindGroupDescriptor } from '../gfx/texture_bindgroup.js';
+const canvas = document.querySelector('#gfx');
 
-// --- tiny mat4 helpers (identity + ortho) for a 2D scene --------------------
-function mat4Identity() {
-  return new Float32Array([
+const WGSL_VS = /* wgsl */`
+struct VSOut {
+  @builtin(position) pos : vec4<f32>,
+  @location(0) vUV : vec2<f32>,
+};
+@group(0) @binding(0) var<uniform> U : mat4x4<f32>;
+@vertex
+fn main(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>) -> VSOut {
+  var out : VSOut;
+  out.pos = U * vec4<f32>(position, 1.0);
+  out.vUV = uv;
+  return out;
+}
+`;
+
+const WGSL_FS = /* wgsl */`
+@group(0) @binding(1) var samp : sampler;
+@group(0) @binding(2) var tex0 : texture_2d<f32>;
+
+@fragment
+fn main(@location(0) vUV: vec2<f32>) -> @location(0) vec4<f32> {
+  return textureSample(tex0, samp, vUV);
+}
+`;
+
+(async function main() {
+  if (!navigator.gpu) {
+    document.body.insertAdjacentHTML('beforeend', `<p>WebGPU not available.</p>`);
+    return;
+  }
+
+  const adapter = await navigator.gpu.requestAdapter();
+  const device = await adapter.requestDevice();
+
+  const context = canvas.getContext('webgpu');
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  context.configure({ device, format });
+
+  // Quad geometry (pos, uv)
+  const positions = new Float32Array([
+    -0.8, -0.8, 0.0,
+     0.8, -0.8, 0.0,
+     0.8,  0.8, 0.0,
+    -0.8,  0.8, 0.0,
+  ]);
+  const uvs = new Float32Array([
+    0, 0,
+    1, 0,
+    1, 1,
+    0, 1,
+  ]);
+  const indices = new Uint16Array([0,1,2, 0,2,3]);
+
+  const posBuf = device.createBuffer({ size: positions.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+  const uvBuf  = device.createBuffer({ size: uvs.byteLength,       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+  const idxBuf = device.createBuffer({ size: indices.byteLength,   usage: GPUBufferUsage.INDEX  | GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(posBuf, 0, positions);
+  device.queue.writeBuffer(uvBuf,  0, uvs);
+  device.queue.writeBuffer(idxBuf, 0, indices);
+
+  // MVP (identity)
+  const ubo = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(ubo, 0, new Float32Array([
     1,0,0,0,
     0,1,0,0,
     0,0,1,0,
     0,0,0,1,
-  ]);
-}
+  ]));
 
-// --- runtime checkerboard generation ----------------------------------------
-async function makeCheckerboardBitmap(w = 256, h = 256, cell = 32) {
-  // Prefer OffscreenCanvas; fall back to a hidden canvas element.
-  let cnv, ctx;
-  if (typeof OffscreenCanvas !== 'undefined') {
-    cnv = new OffscreenCanvas(w, h);
-    ctx = cnv.getContext('2d');
-  } else {
-    cnv = document.createElement('canvas');
-    cnv.width = w; cnv.height = h;
-    ctx = cnv.getContext('2d');
-  }
-
-  // Paint checkerboard
-  for (let y = 0; y < h; y += cell) {
-    for (let x = 0; x < w; x += cell) {
-      const i = ((x / cell) | 0) + ((y / cell) | 0);
-      ctx.fillStyle = (i & 1) ? '#f59e0b' : '#3b82f6'; // amber / blue
-      ctx.fillRect(x, y, cell, cell);
-    }
-  }
-
-  // Draw a white “X” to make sampling obvious
-  ctx.strokeStyle = '#fff';
-  ctx.lineWidth = 4;
-  ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(w,h); ctx.moveTo(w,0); ctx.lineTo(0,h); ctx.stroke();
-
-  // Convert to ImageBitmap
-  if (cnv instanceof OffscreenCanvas) {
-    return await createImageBitmap(cnv);
-  }
-  return await new Promise(resolve => {
-    cnv.toBlob(async (blob) => resolve(await createImageBitmap(blob)));
-  });
-}
-
-// --- WebGPU init -------------------------------------------------------------
-async function initWebGPU(canvas) {
-  const out = { ok: false, message: '' };
-
-  if (!('gpu' in navigator)) {
-    out.message = 'WebGPU not available in this browser.';
-    return out;
-  }
-  const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) {
-    out.message = 'No GPU adapter.';
-    return out;
-  }
-  const device = await adapter.requestDevice();
-  const context = canvas.getContext('webgpu');
-
-  // Choose preferred format for this user agent.
-  const format = navigator.gpu.getPreferredCanvasFormat();
-
-  context.configure({
-    device,
-    format,
-    alphaMode: 'opaque',
-  });
-
-  out.ok = true;
-  out.adapter = adapter;
-  out.device = device;
-  out.context = context;
-  out.format = format;
-  return out;
-}
-
-// --- buffer helpers ----------------------------------------------------------
-function createBuffer(device, typedArray, usage) {
-  const buf = device.createBuffer({
-    size: (typedArray.byteLength + 3) & ~3, // 4-byte align
-    usage,
-    mappedAtCreation: true,
-  });
-  const dst = new typedArray.constructor(buf.getMappedRange());
-  dst.set(typedArray);
-  buf.unmap();
-  return buf;
-}
-
-// --- main --------------------------------------------------------------------
-(async function main(){
-  const canvas = document.getElementById('c');
-  const gpuBadge = document.getElementById('gpu');
-  const msg = document.getElementById('msg');
-
-  const gpu = await initWebGPU(canvas);
-  if (!gpu.ok) { msg.textContent = gpu.message; return; }
-  const { device, context, format, adapter } = gpu;
-
-  gpuBadge.textContent = `Adapter: ${(adapter.info && (adapter.info.description || adapter.info.vendor)) || 'Unknown GPU'}`;
-
-  // Geometry buffers
-  const { positions, uvs, indices } = createTexturedQuadGeometry();
-  const vbPos = createBuffer(device, positions, GPUBufferUsage.VERTEX);
-  const vbUV  = createBuffer(device, uvs, GPUBufferUsage.VERTEX);
-  const ibo   = createBuffer(device, indices, GPUBufferUsage.INDEX);
-
-  // Uniforms: MVP matrix (identity)
-  const uMVPData = mat4Identity();
-  const ubo = createBuffer(device, uMVPData, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
-
-  // Create texture + sampler
-  const bitmap = await makeCheckerboardBitmap(256, 256, 32);
-  const texture = device.createTexture({
-    size: { width: bitmap.width, height: bitmap.height },
+  // 2x2 checker texture
+  const tex = device.createTexture({
+    size: { width: 2, height: 2 },
     format: 'rgba8unorm',
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
   });
-  device.queue.copyExternalImageToTexture(
-    { source: bitmap },
-    { texture },
-    { width: bitmap.width, height: bitmap.height }
+  const data = new Uint8Array([
+    255,  64,  64,255,   64, 255, 64,255,
+     64,  64, 255,255,  255, 255, 64,255,
+  ]);
+  device.queue.writeTexture(
+    { texture: tex },
+    data,
+    { bytesPerRow: 2 * 4, rowsPerImage: 2 },
+    { width: 2, height: 2 }
   );
-  const view = texture.createView();
+
   const sampler = device.createSampler({
     magFilter: 'nearest',
     minFilter: 'nearest',
@@ -140,52 +96,59 @@ function createBuffer(device, typedArray, usage) {
     addressModeV: 'repeat',
   });
 
-  // Pipeline
-  const pipeDesc = buildTexture2DPipelineDescriptor(format);
-  const pipeline = device.createRenderPipeline(pipeDesc);
-
-  // Bind group (layout 0)
-  const bindGroup = device.createBindGroup({
-    layout: pipeline.getBindGroupLayout(0),
-    ...makeTextureBindGroupDescriptor(ubo, sampler, view),
+  const bindGroupLayout = device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.VERTEX,  buffer: { type: 'uniform' } },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+    ]
+  });
+  const pipeline = device.createRenderPipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
+    vertex: {
+      module: device.createShaderModule({ code: WGSL_VS }),
+      entryPoint: 'main',
+      buffers: [
+        { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
+        { arrayStride: 8,  attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x2' }] },
+      ]
+    },
+    fragment: {
+      module: device.createShaderModule({ code: WGSL_FS }),
+      entryPoint: 'main',
+      targets: [{ format }]
+    },
+    primitive: { topology: 'triangle-list', cullMode: 'none' }
   });
 
-  // Animation state
-  let t0 = performance.now();
+  const bindGroup = device.createBindGroup({
+    layout: bindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: ubo } },
+      { binding: 1, resource: sampler },
+      { binding: 2, resource: tex.createView() },
+    ]
+  });
 
   function frame() {
-    const t1 = performance.now();
-    const dt = Math.min(0.1, (t1 - t0) / 1000);
-    t0 = t1;
-
-    // Optionally animate something: here, nothing—keep MVP=I for pixel-perfect-ish quad.
-    device.queue.writeBuffer(ubo, 0, uMVPData.buffer, uMVPData.byteOffset, uMVPData.byteLength);
-
     const encoder = device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
         view: context.getCurrentTexture().createView(),
         loadOp: 'clear',
-        clearValue: { r: 0.07, g: 0.08, b: 0.12, a: 1.0 },
         storeOp: 'store',
-      }],
+        clearValue: { r: 0.04, g: 0.05, b: 0.07, a: 1 }
+      }]
     });
-
     pass.setPipeline(pipeline);
-    pass.setVertexBuffer(0, vbPos);
-    pass.setVertexBuffer(1, vbUV);
-    pass.setIndexBuffer(ibo, 'uint16');
+    pass.setVertexBuffer(0, posBuf);
+    pass.setVertexBuffer(1, uvBuf);
+    pass.setIndexBuffer(idxBuf, 'uint16');
     pass.setBindGroup(0, bindGroup);
-    pass.drawIndexed(6, 1, 0, 0, 0);
+    pass.drawIndexed(6);
     pass.end();
-
     device.queue.submit([encoder.finish()]);
     requestAnimationFrame(frame);
   }
-
   requestAnimationFrame(frame);
-})().catch(err => {
-  const msg = document.getElementById('msg');
-  msg.textContent = `Error: ${err?.message || err}`;
-  console.error(err);
-});
+})();

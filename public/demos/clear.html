@@ -4,7 +4,7 @@
   <link rel="icon" href="data:,">
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>M1 · Triangle (WebGL2)</title>
+  <title>M1 · Clear (WebGPU/WebGL2)</title>
   <style>
     :root { color-scheme: dark; }
     html, body { height: 100%; margin: 0; background:#0b0b0f; color:#d7dde5; }
@@ -24,7 +24,8 @@
   </nav>
   <canvas id="gfx"></canvas>
 
-  <script type="module" src="/src/demos/m1_triangle.js"></script>
+  <!-- Module runs on load; it will find #gfx and #hud -->
+  <script type="module" src="/src/demos/m1_clear.js"></script>
   <noscript>Enable JavaScript to run the demo.</noscript>
 </body>
 </html>
