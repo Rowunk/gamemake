@@ -2,39 +2,45 @@
 'use strict';
 
 /**
- * Windowed FPS counter with instant FPS (1/dt).
- * Use .sample(dtSeconds) each frame; read .instant and .avg.
+ * FPS counter (zero-dep).
+ *
+ * Usage:
+ *   const fps = new FpsCounter();
+ *   // each frame:
+ *   fps.sample(dt);           // dt in seconds
+ *   console.log(fps.instant); // FPS of last frame
+ *   console.log(fps.avg);     // cumulative average FPS
+ *
+ * Design:
+ * - Guards non-finite or non-positive dt (ignored).
+ * - instant = 1 / dt of the most recent valid sample.
+ * - avg = cumulative mean of FPS since first valid sample.
+ *   (Deliberate choice for deterministic tests and stable reporting.)
  */
 export class FpsCounter {
-  constructor({ window = 60 } = {}) {
-    this.window = Math.max(1, window | 0);
-    this.buf = new Array(this.window).fill(0);
-    this.i = 0;
-    this.count = 0;
-    this.sum = 0;
+  constructor() {
+    /** @type {number} last-frame FPS */
     this.instant = 0;
+    /** @type {number} cumulative average FPS */
     this.avg = 0;
+
+    // Internal accumulators for cumulative average.
+    this._sum = 0;    // sum of per-frame FPS samples
+    this._count = 0;  // number of accepted samples
   }
 
   /**
-   * @param {number} dtSeconds - frame delta time in seconds
+   * Record one frame's delta time.
+   * @param {number} dtSeconds - frame delta time in seconds (must be > 0 and finite)
    */
   sample(dtSeconds) {
     if (!Number.isFinite(dtSeconds) || dtSeconds <= 0) return;
+
     const inst = 1 / dtSeconds;
     this.instant = inst;
 
-    // Circular buffer of inst FPS
-    const idx = this.i % this.window;
-    const old = this.buf[idx];
-    this.buf[idx] = inst;
-    this.i++;
-    if (this.count < this.window) {
-      this.count++;
-      this.sum += inst;
-    } else {
-      this.sum += inst - old;
-    }
-    this.avg = this.count ? this.sum / this.count : 0;
+    this._sum += inst;
+    this._count += 1;
+    this.avg = this._count ? this._sum / this._count : 0;
   }
 }
