@@ -1,7 +1,7 @@
 {
   "name": "gamemake",
   "version": "0.0.1",
-  "description": "M0 — core math + slab allocator for a browser-native game engine (no runtime deps).",
+  "description": "Foundations for a browser-native game engine: core math, slab allocator, time; WebGPU/WebGL2 rendering primitives + static demos. No runtime deps.",
   "type": "module",
   "scripts": {
     "start": "python3 -m http.server 8000",

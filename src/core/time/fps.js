@@ -2,45 +2,49 @@
 'use strict';
 
 /**
- * FPS counter (zero-dep).
+ * FPS counter with exponential moving average.
  *
- * Usage:
- *   const fps = new FpsCounter();
- *   // each frame:
- *   fps.sample(dt);           // dt in seconds
- *   console.log(fps.instant); // FPS of last frame
- *   console.log(fps.avg);     // cumulative average FPS
- *
- * Design:
- * - Guards non-finite or non-positive dt (ignored).
- * - instant = 1 / dt of the most recent valid sample.
- * - avg = cumulative mean of FPS since first valid sample.
- *   (Deliberate choice for deterministic tests and stable reporting.)
+ * - Pass { window } to control smoothing; alpha = 1/window.
+ * - Ignores non-finite or non-positive dt.
+ * - instant := 1/dt of last valid sample.
+ * - avg := EMA of FPS; first valid sample seeds avg exactly (no bias).
  */
 export class FpsCounter {
-  constructor() {
-    /** @type {number} last-frame FPS */
-    this.instant = 0;
-    /** @type {number} cumulative average FPS */
-    this.avg = 0;
-
-    // Internal accumulators for cumulative average.
-    this._sum = 0;    // sum of per-frame FPS samples
-    this._count = 0;  // number of accepted samples
+  /**
+   * @param {{window?: number}} [opts]
+   */
+  constructor(opts = {}) {
+    const w = Math.max(1, (opts.window | 0) || 60); // clamp to >=1
+    this.instant = 0;   // last-sample FPS
+    this.avg = 0;       // exponential moving average of FPS
+    this._alpha = 1 / w;
+    this._seeded = false; // whether avg has been seeded by a valid sample
   }
 
   /**
-   * Record one frame's delta time.
-   * @param {number} dtSeconds - frame delta time in seconds (must be > 0 and finite)
+   * Record one frame's delta time in seconds.
+   * @param {number} dtSeconds
    */
   sample(dtSeconds) {
     if (!Number.isFinite(dtSeconds) || dtSeconds <= 0) return;
 
-    const inst = 1 / dtSeconds;
-    this.instant = inst;
+    const fps = 1 / dtSeconds;
+    this.instant = fps;
 
-    this._sum += inst;
-    this._count += 1;
-    this.avg = this._count ? this._sum / this._count : 0;
+    if (!this._seeded) {
+      // Seed EMA exactly to the first valid FPS so steady inputs stay exact
+      this.avg = fps;
+      this._seeded = true;
+      return;
+    }
+    // EMA update: avg += alpha * (x - avg)
+    this.avg += this._alpha * (fps - this.avg);
+  }
+
+  /** Reset all measurements. */
+  reset() {
+    this.instant = 0;
+    this.avg = 0;
+    this._seeded = false;
   }
 }
