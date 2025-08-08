@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>gamemake demos</title>
+<link rel="stylesheet" href="./lib/style.css">
+<div style="margin:2rem">
+  <h1>gamemake demos</h1>
+  <div id="content"></div>
+  <p class="small">Run: <code>python3 -m http.server 8000</code> → open <code>http://localhost:8000/public/</code></p>
+</div>
+<script type="module">
+import { DEMOS } from './manifest.js';
+import { el } from './lib/harness.js';
+
+const byCat = new Map();
+for (const d of DEMOS) { if (!byCat.has(d.category)) byCat.set(d.category, []); byCat.get(d.category).push(d); }
+const content = document.getElementById('content');
+
+for (const [cat, items] of byCat) {
+  el('h2', { text: cat }, content);
+  const grid = el('div', { class: 'grid' }, content);
+  for (const d of items) {
+    const card = el('div', { class: 'card' }, grid);
+    card.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div><a href="${d.path}"><b>${d.title}</b></a></div>
+        <div>${d.backends.map(b=>`<span class="badge">${b}</span>`).join('')}</div>
+      </div>
+      <div class="small">${d.tags.map(t=>`<span class="badge">${t}</span>`).join('')}</div>
+      <div class="small" style="opacity:.7">Path: <code>${d.path}</code></div>
+    `;
+  }
+}
+</script>

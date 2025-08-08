@@ -1,0 +1,107 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Triangle (WebGPU/WebGL2)</title>
+<link rel="stylesheet" href="../../lib/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E">
+<canvas id="canvas"></canvas>
+<div class="panel"><b>Triangle</b> · <span id="mode" class="small"></span></div>
+<script type="module">
+import { fitCanvasToDisplaySize, onResize, rafLoop, hasWebGPU, hasWebGL2 } from '../../lib/harness.js';
+import { setupWebGPU } from '../../../src/gfx/webgpu_runtime.js';
+import { resizeWebGPU, resizeWebGL2 } from '../../../src/gfx/resize.js';
+import { Flags, makeTester, applyHeadless } from '../../lib/testkit.js';
+
+applyHeadless(Flags.headless);
+const t = makeTester('render/triangle');
+const canvas = document.getElementById('canvas');
+const modeEl = document.getElementById('mode');
+const setMode = (m)=>{ modeEl.textContent=m; if (Flags.expect) t.eq(m.toLowerCase(), Flags.expect, 'backend matches ?expect'); };
+
+/* ---------- WebGL2 path ---------- */
+function startWebGL2() {
+  if (!hasWebGL2(canvas)) { setMode('None'); t.ok(false,'WebGL2 unavailable'); return; }
+  setMode('WebGL2');
+  const gl = canvas.getContext('webgl2', { antialias: false });
+
+  const VS = `#version 300 es
+  layout(location=0) in vec2 a_pos;
+  layout(location=1) in vec3 a_col;
+  out vec3 v_col;
+  void main(){ v_col=a_col; gl_Position=vec4(a_pos,0.0,1.0); }`;
+
+  const FS = `#version 300 es
+  precision mediump float;
+  in vec3 v_col; out vec4 frag;
+  void main(){ frag=vec4(v_col,1.0); }`;
+
+  const sh = (tpe, s) => { const o = gl.createShader(tpe); gl.shaderSource(o, s); gl.compileShader(o);
+    if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+
+  const data = new Float32Array([ -0.8,-0.6, 1,0,0,  0.8,-0.6, 0,1,0,  0.0,0.7, 0,0,1 ]);
+  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  const vbo = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vbo); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 20, 0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 20, 8);
+
+  function frame(){
+    const { w,h } = fitCanvasToDisplaySize(canvas);
+    resizeWebGL2(canvas, gl, w, h);
+    gl.clearColor(0.1,0.1,0.1,1); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (!frame._checked) { frame._checked=true; t.ok(w>0 && h>0, 'canvas sized'); }
+  }
+  onResize(frame); rafLoop(frame);
+}
+
+/* ---------- WebGPU path ---------- */
+async function startWebGPU() {
+  setMode('WebGPU');
+  const { device, context, format } = await setupWebGPU(canvas, { alphaMode: 'opaque' });
+
+  const verts = new Float32Array([ -0.8,-0.6, 1,0,0,  0.8,-0.6, 0,1,0,  0.0,0.7, 0,0,1 ]);
+  const vbo = device.createBuffer({ size: verts.byteLength, usage: GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+  new Float32Array(vbo.getMappedRange()).set(verts); vbo.unmap();
+
+  const VS = /* wgsl */`
+  struct VSIn { @location(0) pos: vec2<f32>, @location(1) col: vec3<f32> };
+  struct VSOut { @builtin(position) clip: vec4<f32>, @location(0) vcol: vec3<f32> };
+  @vertex fn main(in:VSIn)->VSOut{ var o:VSOut; o.clip=vec4<f32>(in.pos,0.0,1.0); o.vcol=in.col; return o; }`;
+  const FS = /* wgsl */`@fragment fn main(@location(0) v:vec3<f32>)->@location(0) vec4<f32>{ return vec4<f32>(v,1.0); }`;
+
+  const pipeline = device.createRenderPipeline({
+    layout:'auto',
+    vertex:{ module: device.createShaderModule({code:VS}), entryPoint:'main',
+      buffers:[{ arrayStride:20, attributes:[ {shaderLocation:0,offset:0,format:'float32x2'}, {shaderLocation:1,offset:8,format:'float32x3'} ] }] },
+    fragment:{ module: device.createShaderModule({code:FS}), entryPoint:'main', targets:[{format}] },
+    primitive:{ topology:'triangle-list' }
+  });
+
+  const frame = ()=>{
+    const { w,h } = fitCanvasToDisplaySize(canvas);
+    resizeWebGPU(canvas, context, device, format, { alphaMode:'opaque' }, w, h);
+    const enc = device.createCommandEncoder();
+    const view = context.getCurrentTexture().createView();
+    const pass = enc.beginRenderPass({ colorAttachments:[{ view, clearValue:{r:.1,g:.1,b:.1,a:1}, loadOp:'clear', storeOp:'store' }] });
+    pass.setPipeline(pipeline); pass.setVertexBuffer(0,vbo); pass.draw(3); pass.end();
+    device.queue.submit([enc.finish()]);
+    if (!frame._checked) { frame._checked=true; t.ok(w>0 && h>0, 'canvas sized'); }
+  };
+  onResize(frame); rafLoop(frame);
+}
+
+/* ---------- Boot w/ ?backend ---------- */
+if (Flags.backend === 'webgl2') {
+  startWebGL2();
+} else if (Flags.backend === 'webgpu') {
+  try { await startWebGPU(); } catch (e) { console.warn(e); startWebGL2(); }
+} else {
+  if (hasWebGPU()) { try { await startWebGPU(); } catch (e){ console.warn(e); startWebGL2(); } }
+  else startWebGL2();
+}
+</script>

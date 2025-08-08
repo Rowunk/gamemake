@@ -1,0 +1,140 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Device Lost (WebGPU/WebGL2 Fallback)</title>
+<link rel="stylesheet" href="../../lib/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E">
+
+<canvas id="canvas"></canvas>
+<div class="panel">
+  <b>Device Lost</b> · <span id="mode" class="small"></span> ·
+  <span id="st" class="small">OK</span> ·
+  <button id="kill">Destroy device</button>
+</div>
+
+<script type="module">
+import { fitCanvasToDisplaySize, onResize, rafLoop, hasWebGPU, hasWebGL2 } from '../../lib/harness.js';
+import { setupWebGPU, onDeviceLost } from '../../../src/gfx/webgpu_runtime.js';
+import { beginRenderPassDescriptor, applyGLClear } from '../../../src/gfx/clearcolor.js';
+import { resizeWebGPU, resizeWebGL2 } from '../../../src/gfx/resize.js';
+import { Flags, makeTester, applyHeadless } from '../../lib/testkit.js';
+
+applyHeadless(Flags.headless);
+const t = makeTester('runtime/device_lost');
+
+const sp = new URLSearchParams(location.search);
+const force = (Flags.backend === 'webgl2' || Flags.backend === 'webgpu') ? Flags.backend : null;
+const autoKill = sp.has('autokill') || Flags.headless; // auto-trigger device.destroy in headless/CI
+
+const canvas = document.getElementById('canvas');
+const modeEl = document.getElementById('mode');
+const st = document.getElementById('st');
+const kill = document.getElementById('kill');
+
+const setMode = (m) => {
+  modeEl.textContent = m;
+  if (Flags.expect) t.eq(m.toLowerCase(), Flags.expect, 'backend matches ?expect');
+};
+
+/* -------------------- WebGL2 fallback -------------------- */
+function startWebGL2() {
+  if (!hasWebGL2(canvas)) {
+    setMode('None');
+    document.body.innerHTML = '<div class="panel">No WebGPU/WebGL2 available.</div>';
+    t.ok(false, 'no GPU backend available');
+    throw new Error('No GPU backend available');
+  }
+
+  setMode('WebGL2');
+  st.textContent = 'Running in WebGL2 (device destroy unsupported)';
+  st.style.color = '';
+  kill.disabled = true;
+  kill.title = 'Not supported in WebGL2';
+  t.ok(kill.disabled, 'kill button disabled on WebGL2');
+
+  const gl = canvas.getContext('webgl2', { antialias: false });
+
+  const frame = () => {
+    const { w, h } = fitCanvasToDisplaySize(canvas);
+    resizeWebGL2(canvas, gl, w, h);
+
+    const tsec = performance.now() * 0.001;
+    const r = 0.08 + 0.02 * Math.sin(tsec * 1.0);
+    const g = 0.08 + 0.02 * Math.sin(tsec * 1.6 + 1.0);
+    const b = 0.12 + 0.02 * Math.sin(tsec * 2.3 + 2.0);
+    applyGLClear(gl, [r, g, b, 1]);
+
+    if (!frame._once) { frame._once = true; t.ok(w > 0 && h > 0, 'canvas sized'); }
+  };
+
+  onResize(frame);
+  rafLoop(frame);
+}
+
+/* -------------------- WebGPU preferred path -------------------- */
+async function startWebGPU() {
+  setMode('WebGPU');
+
+  const { device, context, format } = await setupWebGPU(canvas, { alphaMode: 'opaque' });
+
+  let lostFired = false;
+  onDeviceLost(device, (info) => {
+    lostFired = true;
+    st.textContent = `LOST (${info?.reason ?? 'unknown'}): ${info?.message ?? ''}`;
+    st.style.color = '#ff8888';
+    t.ok(true, 'device lost event fired');
+    // small async check after text updates
+    queueMicrotask(() => t.ok(st.textContent.startsWith('LOST'), 'status shows LOST'));
+  });
+
+  kill.disabled = false;
+  kill.title = 'Destroy GPUDevice (simulate device loss)';
+  kill.addEventListener('click', () => {
+    try { device.destroy(); } catch {}
+    kill.disabled = true;
+    t.ok(kill.disabled, 'kill disabled after destroy');
+  });
+
+  const frame = () => {
+    const { w, h } = fitCanvasToDisplaySize(canvas);
+    resizeWebGPU(canvas, context, device, format, { alphaMode: 'opaque' }, w, h);
+
+    const tsec = performance.now() * 0.001;
+    const r = 0.10 + 0.02 * Math.sin(tsec * 1.0);
+    const g = 0.12 + 0.02 * Math.sin(tsec * 1.6 + 1.0);
+    const b = 0.16 + 0.02 * Math.sin(tsec * 2.3 + 2.0);
+
+    try {
+      const enc = device.createCommandEncoder();
+      const view = context.getCurrentTexture().createView();
+      const pass = enc.beginRenderPass(beginRenderPassDescriptor(view, [r, g, b, 1]));
+      pass.end();
+      device.queue.submit([enc.finish()]);
+    } catch (e) {
+      // After loss, submit may throw depending on impl; that's fine.
+      if (!lostFired) console.warn('submit threw before loss fired:', e);
+    }
+
+    if (!frame._once) {
+      frame._once = true;
+      t.ok(w > 0 && h > 0, 'canvas sized');
+      if (autoKill) setTimeout(() => kill.click(), 120); // trigger loss in CI/headless
+    }
+  };
+
+  onResize(frame);
+  rafLoop(frame);
+}
+
+/* -------------------- Boot sequence with ?backend -------------------- */
+if (force === 'webgl2') {
+  startWebGL2();
+} else if (force === 'webgpu') {
+  try { await startWebGPU(); } catch (e) { console.warn('Forced WebGPU failed; fallback:', e); startWebGL2(); }
+} else {
+  if (hasWebGPU()) {
+    try { await startWebGPU(); } catch (e) { console.warn('WebGPU init failed; fallback:', e); startWebGL2(); }
+  } else {
+    startWebGL2();
+  }
+}
+</script>

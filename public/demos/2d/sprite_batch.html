@@ -1,0 +1,221 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>2D Sprite Batch (WebGPU → WebGL2)</title>
+<link rel="stylesheet" href="../../lib/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E">
+<canvas id="canvas"></canvas>
+<div class="panel"><b>Sprite Batch</b> · <span class="small">Count</span>
+  <input id="count" type="range" min="64" max="2048" step="1" value="512">
+  <span id="countv" class="small"></span> · <span id="mode" class="small"></span>
+</div>
+<script type="module">
+import { fitCanvasToDisplaySize, onResize, rafLoop, hasWebGPU, hasWebGL2, makeCheckerRGBA8 } from '../../lib/harness.js';
+import { setupWebGPU } from '../../../src/gfx/webgpu_runtime.js';
+import { resizeWebGPU, resizeWebGL2 } from '../../../src/gfx/resize.js';
+import { createTexturedQuadGeometry } from '../../../src/gfx/mesh_quad.js';
+import { uploadTextureRGBA8WebGPU, uploadTextureRGBA8WebGL2 } from '../../../src/gfx/texture_upload.js';
+import { Flags, makeTester, makeRng, applyHeadless } from '../../lib/testkit.js';
+
+applyHeadless(Flags.headless);
+const t = makeTester('2d/sprite_batch');
+const rng = makeRng(Flags.seed ?? 1337);
+
+const canvas = document.getElementById('canvas');
+const countEl = document.getElementById('count');
+const countV  = document.getElementById('countv');
+const modeEl  = document.getElementById('mode');
+countV.textContent = countEl.value;
+
+const setMode=(m)=>{ modeEl.textContent=m; if (Flags.expect) t.eq(m.toLowerCase(), Flags.expect, 'backend matches ?expect'); };
+
+// ------------------------------ WebGPU path ----------------------------------
+async function startWebGPU() {
+  setMode('WebGPU');
+  const { device, context, format } = await setupWebGPU(canvas, { alphaMode: 'opaque' });
+
+  const checker = makeCheckerRGBA8(256,256,8);
+  const { texture } = uploadTextureRGBA8WebGPU(device, checker);
+  const view = texture.createView();
+  const sampler = device.createSampler({ magFilter:'linear', minFilter:'linear', mipmapFilter:'linear', addressModeU:'repeat', addressModeV:'repeat' });
+
+  const g = createTexturedQuadGeometry();
+  const mk = (arr, usage) => { const b = device.createBuffer({ size: arr.byteLength, usage, mappedAtCreation: true }); new arr.constructor(b.getMappedRange()).set(arr); b.unmap(); return b; };
+  const vboPos = mk(g.positions, GPUBufferUsage.VERTEX);
+  const vboUV  = mk(g.uvs,       GPUBufferUsage.VERTEX);
+  const ibo    = mk(g.indices,   GPUBufferUsage.INDEX);
+
+  const MAX = 4096;
+  const inst = new Float32Array(MAX * 5);
+  const instBuf = device.createBuffer({ size: inst.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+
+  function seed(n) {
+    // Deterministic grid + jitter (rng)
+    const cols = Math.ceil(Math.sqrt(n));
+    const rows = Math.ceil(n / cols);
+    let k = 0;
+    for (let j = 0; j < rows; j++) for (let i = 0; i < cols && k < n; i++, k++) {
+      const x = (i / Math.max(1, cols-1)) * 1.8 - 0.9 + (rng()-0.5)*0.01;
+      const y = (j / Math.max(1, rows-1)) * 1.6 - 0.8 + (rng()-0.5)*0.01;
+      inst[k*5+0]=x; inst[k*5+1]=y; inst[k*5+2]=0.08; inst[k*5+3]=0.08; inst[k*5+4]=(i+j)*0.2;
+    }
+    device.queue.writeBuffer(instBuf, 0, inst, 0, n * 5);
+  }
+
+  const ubo = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const writeUniform = (aspect, time) => device.queue.writeBuffer(ubo, 0, new Float32Array([aspect, time, 0, 0]));
+
+  const VS = /* wgsl */`
+  struct U { aspect:f32, time:f32, _p0:f32, _p1:f32; };
+  @group(0) @binding(0) var<uniform> u:U;
+  struct In { @location(0) p:vec3<f32>, @location(1) uv:vec2<f32>, @location(2) iPos:vec2<f32>, @location(3) iScale:vec2<f32>, @location(4) iAngle:f32 };
+  struct Out { @builtin(position) clip:vec4<f32>, @location(0) vUV:vec2<f32> };
+  @vertex fn main(in:In)->Out{
+    let c=cos(in.iAngle), s=sin(in.iAngle);
+    let q=(mat2x2<f32>(c,-s,s,c)*(in.p.xy*in.iScale))+in.iPos;
+    var o:Out; o.clip=vec4<f32>(q.x*u.aspect,q.y,0.0,1.0); o.vUV=in.uv; return o;
+  }`;
+  const FS = /* wgsl */` @group(0) @binding(1) var samp:sampler; @group(0) @binding(2) var tex:texture_2d<f32>;
+  @fragment fn main(@location(0) vUV:vec2<f32>)->@location(0) vec4<f32>{ return textureSample(tex,samp,vUV); }`;
+
+  const pipeline = device.createRenderPipeline({
+    layout: 'auto',
+    vertex: { module: device.createShaderModule({ code: VS }), entryPoint:'main',
+      buffers: [
+        { arrayStride:12, attributes:[{ shaderLocation:0, offset:0, format:'float32x3' }] },
+        { arrayStride: 8, attributes:[{ shaderLocation:1, offset:0, format:'float32x2' }] },
+        { arrayStride:20, stepMode:'instance', attributes:[
+          { shaderLocation:2, offset: 0, format:'float32x2' },
+          { shaderLocation:3, offset: 8, format:'float32x2' },
+          { shaderLocation:4, offset:16, format:'float32'   },
+        ]},
+      ] },
+    fragment: { module: device.createShaderModule({ code: FS }), entryPoint:'main', targets:[{ format }] },
+    primitive: { topology:'triangle-list' },
+  });
+
+  const bind = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries:[
+    { binding:0, resource:{ buffer:ubo, offset:0, size:16 } },
+    { binding:1, resource:sampler },
+    { binding:2, resource:view },
+  ]});
+
+  function frame(t = 0) {
+    const { w, h } = fitCanvasToDisplaySize(canvas);
+    resizeWebGPU(canvas, context, device, format, { alphaMode:'opaque' }, w, h);
+    const n = parseInt(countEl.value, 10);
+    countV.textContent = String(n);
+    for (let i = 0; i < n; i++) inst[i*5+4] += 0.01 + (i % 7) * 0.0002;
+    device.queue.writeBuffer(instBuf, 0, inst, 0, n * 5);
+    writeUniform(h / w, t * 1e-3);
+
+    const enc = device.createCommandEncoder();
+    const rtv = context.getCurrentTexture().createView();
+    const pass = enc.beginRenderPass({ colorAttachments:[{ view: rtv, clearValue:{ r:.07,g:.07,b:.1,a:1 }, loadOp:'clear', storeOp:'store' }] });
+    pass.setPipeline(pipeline); pass.setBindGroup(0, bind);
+    pass.setVertexBuffer(0, vboPos); pass.setVertexBuffer(1, vboUV); pass.setVertexBuffer(2, instBuf);
+    pass.setIndexBuffer(ibo, 'uint16'); pass.drawIndexed(6, n);
+    pass.end(); device.queue.submit([enc.finish()]);
+
+    if (!frame._checked) { frame._checked=true; t.ok(w>0&&h>0,'canvas sized'); }
+  }
+
+  seed(parseInt(countEl.value, 10));
+  onResize(() => frame(performance.now())); rafLoop(frame);
+  countEl.addEventListener('input', () => frame(performance.now()));
+}
+
+// -------------------------- WebGL2 fallback path ------------------------------
+async function startWebGL2() {
+  if (!hasWebGL2(canvas)) { t.ok(false, 'WebGL2 unavailable'); return; }
+  setMode('WebGL2');
+
+  const gl = canvas.getContext('webgl2', { antialias: false });
+
+  const VS = `#version 300 es
+  layout(location=0) in vec3 a_pos; layout(location=1) in vec2 a_uv;
+  layout(location=2) in vec2 i_pos; layout(location=3) in vec2 i_scale; layout(location=4) in float i_angle;
+  uniform float u_aspect; out vec2 v_uv;
+  void main(){ float c=cos(i_angle), s=sin(i_angle); mat2 R = mat2(c,-s,s,c);
+    vec2 q = R * (a_pos.xy * i_scale) + i_pos;
+    gl_Position = vec4(q.x * u_aspect, q.y, 0.0, 1.0); v_uv = a_uv; }`;
+  const FS = `#version 300 es
+  precision mediump float; in vec2 v_uv; uniform sampler2D u_tex; out vec4 frag;
+  void main(){ frag = texture(u_tex, v_uv); }`;
+
+  const compile = (type, src) => { const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh)||'shader compile failed'); return sh; };
+  const prog = gl.createProgram(); gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(prog); if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog)||'program link failed'); gl.useProgram(prog);
+
+  const u_aspect = gl.getUniformLocation(prog, 'u_aspect'); gl.uniform1f(u_aspect, 1.0);
+  gl.uniform1i(gl.getUniformLocation(prog, 'u_tex'), 0);
+
+  const g = createTexturedQuadGeometry();
+  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+
+  const vboPos = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vboPos); gl.bufferData(gl.ARRAY_BUFFER, g.positions, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  const vboUV  = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vboUV); gl.bufferData(gl.ARRAY_BUFFER, g.uvs, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
+  const ibo = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, g.indices, gl.STATIC_DRAW);
+
+  const MAX = 4096;
+  const STRIDE = 5 * 4;
+  const inst = new Float32Array(MAX * 5);
+  const instBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, instBuf); gl.bufferData(gl.ARRAY_BUFFER, inst.byteLength, gl.DYNAMIC_DRAW);
+
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, STRIDE, 0);  gl.vertexAttribDivisor(2, 1);
+  gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 2, gl.FLOAT, false, STRIDE, 8);  gl.vertexAttribDivisor(3, 1);
+  gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4, 1, gl.FLOAT, false, STRIDE, 16); gl.vertexAttribDivisor(4, 1);
+
+  const checker = makeCheckerRGBA8(256,256,8);
+  const { texture } = uploadTextureRGBA8WebGL2(gl, { ...checker, mips: true });
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texture);
+
+  function seed(n) {
+    const cols = Math.ceil(Math.sqrt(n));
+    const rows = Math.ceil(n / cols);
+    let k = 0;
+    for (let j = 0; j < rows; j++) for (let i = 0; i < cols && k < n; i++, k++) {
+      const x = (i / Math.max(1, cols-1)) * 1.8 - 0.9 + (rng()-0.5)*0.01;
+      const y = (j / Math.max(1, rows-1)) * 1.6 - 0.8 + (rng()-0.5)*0.01;
+      inst[k*5+0]=x; inst[k*5+1]=y; inst[k*5+2]=0.08; inst[k*5+3]=0.08; inst[k*5+4]=(i+j)*0.2;
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, instBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, inst.subarray(0, n * 5));
+  }
+
+  function frame() {
+    const { w, h } = fitCanvasToDisplaySize(canvas);
+    resizeWebGL2(canvas, gl, w, h);
+    gl.uniform1f(u_aspect, h / Math.max(1, w));
+
+    const n = parseInt(countEl.value, 10);
+    countV.textContent = String(n);
+    for (let i = 0; i < n; i++) inst[i*5+4] += 0.01 + (i % 7) * 0.0002;
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, inst.subarray(0, n * 5));
+
+    gl.clearColor(0.07, 0.07, 0.10, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.bindVertexArray(vao);
+    gl.drawElementsInstanced(gl.TRIANGLES, g.indices.length, gl.UNSIGNED_SHORT, 0, n);
+
+    if (!frame._checked) { frame._checked = true; t.ok(w>0&&h>0,'canvas sized'); }
+  }
+
+  seed(parseInt(countEl.value, 10));
+  onResize(frame); rafLoop(frame);
+  countEl.addEventListener('input', frame);
+}
+
+// Boot (prefer WebGPU unless ?backend forces)
+if (Flags.backend === 'webgl2') {
+  await startWebGL2();
+} else if (Flags.backend === 'webgpu') {
+  try { await startWebGPU(); } catch (e) { console.warn(e); await startWebGL2(); }
+} else {
+  if (hasWebGPU()) { try { await startWebGPU(); } catch (e){ console.warn(e); await startWebGL2(); } }
+  else await startWebGL2();
+}
+</script>

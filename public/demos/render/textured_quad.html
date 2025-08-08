@@ -1,0 +1,156 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Textured Quad (WebGPU/WebGL2)</title>
+<link rel="stylesheet" href="../../lib/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E">
+<canvas id="canvas"></canvas>
+<div class="panel">
+  <b>Textured Quad</b> · <span id="mode" class="small"></span>
+  · Sampler
+  <select id="samp">
+    <option value="mipmapLinear">mipmapLinear</option>
+    <option value="linearClamp">linearClamp</option>
+    <option value="nearestRepeat">nearestRepeat</option>
+  </select>
+  · Scale <input id="scale" type="range" min="0.25" max="2" step="0.01" value="1">
+</div>
+<script type="module">
+import { fitCanvasToDisplaySize, onResize, rafLoop, hasWebGPU, hasWebGL2, makeCheckerRGBA8 } from '../../lib/harness.js';
+import { setupWebGPU } from '../../../src/gfx/webgpu_runtime.js';
+import { resizeWebGPU, resizeWebGL2 } from '../../../src/gfx/resize.js';
+import { uploadTextureRGBA8WebGPU, uploadTextureRGBA8WebGL2 } from '../../../src/gfx/texture_upload.js';
+import { createTexturedQuadGeometry } from '../../../src/gfx/mesh_quad.js';
+import { buildTexture2DPipelineDescriptor, WGSL_TEX2D_VERT, WGSL_TEX2D_FRAG } from '../../../src/gfx/pipeline_texture2d.js';
+import { createSamplerPreset } from '../../../src/gfx/sampler.js';
+import { Flags, makeTester, applyHeadless } from '../../lib/testkit.js';
+
+applyHeadless(Flags.headless);
+const t = makeTester('render/textured_quad');
+
+const canvas = document.getElementById('canvas');
+const modeEl = document.getElementById('mode');
+const sampEl = document.getElementById('samp');
+const scaleEl = document.getElementById('scale');
+const checker = makeCheckerRGBA8(256, 256, 8);
+const setMode = (m)=>{ modeEl.textContent=m; if (Flags.expect) t.eq(m.toLowerCase(), Flags.expect, 'backend matches ?expect'); };
+
+/** WebGL2 startup (fallback) */
+async function startWebGL2() {
+  if (!hasWebGL2(canvas)) { setMode('None'); t.ok(false,'WebGL2 unavailable'); return; }
+  setMode('WebGL2');
+  const gl = canvas.getContext('webgl2');
+
+  const { texture } = uploadTextureRGBA8WebGL2(gl, { ...checker, mips: true });
+
+  const VS = `#version 300 es
+  layout(location=0) in vec3 a_pos; layout(location=1) in vec2 a_uv;
+  uniform mat4 u_mvp; out vec2 v_uv;
+  void main(){ v_uv=a_uv; gl_Position=u_mvp*vec4(a_pos,1.0); }`;
+  const FS = `#version 300 es
+  precision mediump float; in vec2 v_uv; uniform sampler2D u_tex; out vec4 frag;
+  void main(){ frag=texture(u_tex, v_uv); }`;
+
+  const sh=(t,s)=>{ const o=gl.createShader(t); gl.shaderSource(o,s); gl.compileShader(o);
+    if(!gl.getShaderParameter(o,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)||'compile'); return o; };
+  const prog=gl.createProgram(); gl.attachShader(prog,sh(gl.VERTEX_SHADER,VS)); gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,FS));
+  gl.linkProgram(prog); if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog)||'link'); gl.useProgram(prog);
+
+  const u_mvp = gl.getUniformLocation(prog,'u_mvp');
+  const setScale = (s) => gl.uniformMatrix4fv(u_mvp,false,new Float32Array([ s,0,0,0, 0,s,0,0, 0,0,1,0, 0,0,0,1 ]));
+  setScale(parseFloat(scaleEl.value));
+  scaleEl.addEventListener('input', () => setScale(parseFloat(scaleEl.value)));
+  gl.uniform1i(gl.getUniformLocation(prog,'u_tex'), 0);
+
+  const g = createTexturedQuadGeometry();
+  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+
+  const vbo0 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vbo0);
+  gl.bufferData(gl.ARRAY_BUFFER, g.positions, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+
+  const vbo1 = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vbo1);
+  gl.bufferData(gl.ARRAY_BUFFER, g.uvs, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
+
+  const ibo = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, g.indices, gl.STATIC_DRAW);
+
+  const frame = () => {
+    const { w, h } = fitCanvasToDisplaySize(canvas);
+    resizeWebGL2(canvas, gl, w, h);
+    gl.clearColor(0.07, 0.07, 0.10, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.bindVertexArray(vao); gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+    if (!frame._checked) { frame._checked = true; t.ok(w>0&&h>0,'canvas sized'); }
+  };
+  onResize(frame); rafLoop(frame);
+}
+
+/** WebGPU startup (preferred) */
+async function startWebGPU() {
+  setMode('WebGPU');
+  const { device, context, format } = await setupWebGPU(canvas, { alphaMode: 'opaque' });
+
+  const { texture } = uploadTextureRGBA8WebGPU(device, checker);
+  const view = texture.createView();
+
+  const makeSampler = (kind) => device.createSampler(createSamplerPreset(kind));
+  let sampler = makeSampler(sampEl.value);
+
+  const g = createTexturedQuadGeometry();
+  const mk=(arr,usage)=>{ const b=device.createBuffer({size:arr.byteLength,usage,mappedAtCreation:true});
+    new arr.constructor(b.getMappedRange()).set(arr); b.unmap(); return b; };
+  const vboPos = mk(g.positions, GPUBufferUsage.VERTEX);
+  const vboUV  = mk(g.uvs,       GPUBufferUsage.VERTEX);
+  const ibo    = mk(g.indices,   GPUBufferUsage.INDEX);
+
+  const ubo = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const writeScale = (s) =>
+    device.queue.writeBuffer(ubo, 0, new Float32Array([ s,0,0,0, 0,s,0,0, 0,0,1,0, 0,0,0,1 ]));
+  writeScale(parseFloat(scaleEl.value));
+  scaleEl.addEventListener('input', () => writeScale(parseFloat(scaleEl.value)));
+
+  const desc = buildTexture2DPipelineDescriptor(format);
+  desc.vertex.module   = device.createShaderModule({ code: WGSL_TEX2D_VERT });
+  desc.fragment.module = device.createShaderModule({ code: WGSL_TEX2D_FRAG });
+  const pipeline = device.createRenderPipeline(desc);
+
+  const mkBind = () => device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: ubo, offset: 0, size: 64 } },
+      { binding: 1, resource: sampler },
+      { binding: 2, resource: view },
+    ]
+  });
+  let bind = mkBind();
+  sampEl.addEventListener('change', () => { sampler = makeSampler(sampEl.value); bind = mkBind(); t.ok(true,'sampler changed'); });
+
+  const frame = () => {
+    const { w, h } = fitCanvasToDisplaySize(canvas);
+    resizeWebGPU(canvas, context, device, format, { alphaMode: 'opaque' }, w, h);
+    const enc = device.createCommandEncoder();
+    const rtv = context.getCurrentTexture().createView();
+    const pass = enc.beginRenderPass({
+      colorAttachments: [{ view: rtv, clearValue: { r: 0.07, g: 0.07, b: 0.10, a: 1 }, loadOp: 'clear', storeOp: 'store' }]
+    });
+    pass.setPipeline(pipeline); pass.setBindGroup(0, bind);
+    pass.setVertexBuffer(0, vboPos); pass.setVertexBuffer(1, vboUV);
+    pass.setIndexBuffer(ibo, 'uint16'); pass.drawIndexed(6);
+    pass.end(); device.queue.submit([enc.finish()]);
+    if (!frame._checked) { frame._checked=true; t.ok(w>0&&h>0,'canvas sized'); }
+  };
+
+  onResize(frame); rafLoop(frame);
+}
+
+/** Boot with optional ?backend */
+if (Flags.backend === 'webgl2') {
+  await startWebGL2();
+} else if (Flags.backend === 'webgpu') {
+  try { await startWebGPU(); } catch (e) { console.warn(e); await startWebGL2(); }
+} else {
+  if (hasWebGPU()) { try { await startWebGPU(); } catch (e){ console.warn(e); await startWebGL2(); } }
+  else await startWebGL2();
+}
+</script>

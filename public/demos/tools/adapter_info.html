@@ -1,0 +1,81 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Adapter Info (WebGPU/WebGL2)</title>
+<link rel="stylesheet" href="../../lib/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E">
+<div id="root" style="margin:1rem"></div>
+<script type="module">
+import { hasWebGPU, hasWebGL2 } from '../../lib/harness.js';
+import { getAdapterInfo, summarizeAdapterInfo } from '../../../src/gfx/adapter_info.js';
+import { hudHtml } from '../../../src/gfx/hud.js';
+import { Flags, makeTester, applyHeadless } from '../../lib/testkit.js';
+
+applyHeadless(Flags.headless);
+const t = makeTester('tools/adapter_info');
+const root = document.getElementById('root');
+
+function card(html) { const d=document.createElement('div'); d.className='card'; d.innerHTML=html; return d; }
+
+function safeGet(gl, pname) { try { return gl.getParameter(pname); } catch { return undefined; } }
+
+function getWebGL2Info() {
+  const canvas = document.createElement('canvas');
+  const gl = canvas.getContext('webgl2');
+  if (!gl) return null;
+  const vendor   = safeGet(gl, gl.VENDOR);
+  const renderer = safeGet(gl, gl.RENDERER);
+  const version  = safeGet(gl, gl.VERSION);
+  const shading  = safeGet(gl, gl.SHADING_LANGUAGE_VERSION);
+  const exts = new Set(gl.getSupportedExtensions() || []);
+  const limits = {};
+  const put = (k, cap) => { const v = safeGet(gl, cap); if (v !== undefined && v !== null) limits[k] = v; };
+  put('MAX_TEXTURE_SIZE', gl.MAX_TEXTURE_SIZE);
+  put('MAX_CUBE_MAP_TEXTURE_SIZE', gl.MAX_CUBE_MAP_TEXTURE_SIZE);
+  put('MAX_3D_TEXTURE_SIZE', gl.MAX_3D_TEXTURE_SIZE);
+  put('MAX_RENDERBUFFER_SIZE', gl.MAX_RENDERBUFFER_SIZE);
+  put('MAX_TEXTURE_IMAGE_UNITS', gl.MAX_TEXTURE_IMAGE_UNITS);
+  put('MAX_VERTEX_ATTRIBS', gl.MAX_VERTEX_ATTRIBS);
+  put('MAX_UNIFORM_BUFFER_BINDINGS', gl.MAX_UNIFORM_BUFFER_BINDINGS);
+  put('MAX_VERTEX_UNIFORM_BLOCKS', gl.MAX_VERTEX_UNIFORM_BLOCKS);
+  put('MAX_FRAGMENT_UNIFORM_BLOCKS', gl.MAX_FRAGMENT_UNIFORM_BLOCKS);
+  const pieces = [];
+  if (vendor)   pieces.push(vendor);
+  if (renderer) pieces.push(renderer);
+  if (version)  pieces.push(String(version));
+  if (shading)  pieces.push(String(shading));
+  const name = pieces.length ? pieces.join(' · ') : 'WebGL2 Adapter';
+  return { name, features: exts, limits };
+}
+
+function renderInfo(info, modeLabel) {
+  const hdr = document.createElement('div'); hdr.className='card';
+  hdr.innerHTML = `<b>Adapter Info</b> · <span class="small">${modeLabel}</span>`;
+  root.appendChild(hdr);
+  const hud = document.createElement('div'); hud.innerHTML = hudHtml(info); root.appendChild(hud);
+  const pre = document.createElement('pre'); pre.style.marginTop = '1rem'; pre.textContent = summarizeAdapterInfo(info); root.appendChild(pre);
+  // tests
+  t.ok(typeof info.name === 'string', 'has name');
+  t.ok(info.features instanceof Set, 'features is Set');
+  t.ok(info.limits && typeof info.limits === 'object', 'limits is object');
+}
+
+(async () => {
+  if (hasWebGPU() && Flags.backend !== 'webgl2') {
+    try {
+      const info = await getAdapterInfo();
+      renderInfo(info, 'WebGPU');
+      return;
+    } catch (e) {
+      console.warn('WebGPU adapter query failed; attempting WebGL2 fallback:', e);
+    }
+  }
+
+  if (hasWebGL2(document.createElement('canvas'))) {
+    const glInfo = getWebGL2Info();
+    if (glInfo) { renderInfo(glInfo, 'WebGL2 (fallback)'); return; }
+  }
+
+  root.appendChild(card('No WebGPU or WebGL2 available on this platform.'));
+  t.ok(false, 'no backend available');
+})();
+</script>

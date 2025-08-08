@@ -1,0 +1,18 @@
+:root {
+  --bg: #0f1117;
+  --fg: #e7eaf0;
+  --panel: #111722cc;
+  --accent: #4da3ff;
+  --font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif;
+}
+html, body { height:100%; margin:0; background:var(--bg); color:var(--fg); font:var(--font); }
+a { color: var(--accent); text-decoration: none; }
+#canvas { width:100vw; height:100vh; display:block; background:#121417; }
+.panel {
+  position: fixed; top: 8px; left: 8px; background: var(--panel);
+  padding: .5rem .75rem; border-radius: .5rem; backdrop-filter: blur(4px);
+}
+.small { font-size: 12px; opacity: .8 }
+.grid { display:grid; gap:.75rem; grid-template-columns: repeat(auto-fill,minmax(320px,1fr)); }
+.card { background:#15171c; border:1px solid #23262d; border-radius:.5rem; padding:.75rem 1rem; }
+.badge { display:inline-block; padding:.05rem .4rem; border-radius:.5rem; background:#222833; color:#c5d1ea; margin-right:.35rem; font-size:11px }

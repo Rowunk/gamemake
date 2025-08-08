@@ -1,0 +1,275 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Lambert-lit Cube (WebGPU/WebGL2)</title>
+<link rel="stylesheet" href="../../lib/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E">
+<canvas id="canvas"></canvas>
+<div class="panel">
+  <b>Lambert-lit Cube</b> · <span class="small">Drag to orbit · Wheel to zoom</span> ·
+  <span id="mode" class="small"></span>
+</div>
+
+<script type="module">
+import { fitCanvasToDisplaySize, onResize, rafLoop, hasWebGPU, hasWebGL2 } from '../../lib/harness.js';
+import { setupWebGPU } from '../../../src/gfx/webgpu_runtime.js';
+import { resizeWebGPU, resizeWebGL2 } from '../../../src/gfx/resize.js';
+import { createCubeGeometry } from '../../../src/gfx/mesh.js';
+import { perspective, makeOrbitController } from '../../../src/gfx/camera.js';
+import { Mat4 } from '../../../src/core/math/mat4.js';
+import { Flags, makeTester, applyHeadless } from '../../lib/testkit.js';
+
+applyHeadless(Flags.headless);
+const T = makeTester('3d/lambert');
+
+const canvas = document.getElementById('canvas');
+const modeEl = document.getElementById('mode');
+const setMode = (m)=>{ modeEl.textContent=m; if (Flags.expect) T.eq(m.toLowerCase(), Flags.expect, 'backend matches ?expect'); };
+
+/* ----------------------- Orbit input (shared) ----------------------- */
+const orbit = makeOrbitController({ distance: 4, yaw: 0.6, pitch: 0.6 });
+let dragging=false, px=0, py=0;
+canvas.addEventListener('pointerdown', e=>{ dragging=true; px=e.clientX; py=e.clientY; canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener('pointerup',   e=>{ dragging=false; canvas.releasePointerCapture(e.pointerId); });
+canvas.addEventListener('pointermove', e=>{ if(!dragging) return; const dx=e.clientX-px, dy=e.clientY-py; px=e.clientX; py=e.clientY; orbit.update(-dx*0.005, -dy*0.005, 0); });
+canvas.addEventListener('wheel', e=>{ orbit.update(0,0, Math.sign(e.deltaY)*0.1); e.preventDefault(); }, { passive:false });
+
+/* =============================== WebGL2 =============================== */
+function startWebGL2() {
+  if (!hasWebGL2(canvas)) { setMode('None'); T.ok(false,'WebGL2 unavailable'); return; }
+  setMode('WebGL2');
+  const gl = canvas.getContext('webgl2', { antialias:false, depth:true });
+
+  // Vertex + fragment: compute a face normal from position (axis-aligned cube)
+  const VS = `#version 300 es
+  layout(location=0) in vec3 a_pos;
+  layout(location=1) in vec3 a_col; // used as base color
+
+  uniform mat4 u_mvp;
+  uniform mat4 u_model;
+
+  out vec3 v_col;
+  out vec3 v_nrm; // world-space normal
+
+  vec3 faceNormal(vec3 p){
+    vec3 ap = abs(p);
+    if (ap.x >= ap.y && ap.x >= ap.z) return vec3(sign(p.x), 0.0, 0.0);
+    if (ap.y >= ap.x && ap.y >= ap.z) return vec3(0.0, sign(p.y), 0.0);
+    return vec3(0.0, 0.0, sign(p.z));
+  }
+
+  void main(){
+    v_col = a_col;
+    vec3 n = faceNormal(a_pos);
+    v_nrm = normalize((u_model * vec4(n, 0.0)).xyz);
+    gl_Position = u_mvp * vec4(a_pos, 1.0);
+  }`;
+
+  const FS = `#version 300 es
+  precision mediump float;
+  in vec3 v_col;
+  in vec3 v_nrm;
+  out vec4 frag;
+
+  void main(){
+    // fixed directional light in world space
+    vec3 L = normalize(vec3(0.5, 0.8, 0.6));
+    float NdotL = max(dot(normalize(v_nrm), L), 0.0);
+    float ambient = 0.25;
+    float diffuse = 0.75 * NdotL;
+    vec3 color = (ambient + diffuse) * v_col;
+    frag = vec4(color, 1.0);
+  }`;
+
+  const compile = (type, src) => {
+    const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh)||'compile');
+    return sh;
+  };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog)||'link');
+  gl.useProgram(prog);
+
+  const u_mvp   = gl.getUniformLocation(prog, 'u_mvp');
+  const u_model = gl.getUniformLocation(prog, 'u_model');
+
+  const g = createCubeGeometry();
+  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+
+  const vboPos = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vboPos);
+  gl.bufferData(gl.ARRAY_BUFFER, g.positions, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+
+  const vboCol = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vboCol);
+  gl.bufferData(gl.ARRAY_BUFFER, g.colors, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+
+  const ibo = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, g.indices, gl.STATIC_DRAW);
+
+  gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS);
+
+  const frame = (t=0) => {
+    const { w, h } = fitCanvasToDisplaySize(canvas);
+    resizeWebGL2(canvas, gl, w, h);
+
+    const proj = perspective(Math.PI/3, w/Math.max(1,h), 0.1, 100);
+    const view = orbit.getViewMatrix();
+    const model = Mat4.rotationY((t*0.001)%(2.0*3.14159265));
+    const mvp = new Mat4(proj.m).multiply(view).multiply(model);
+
+    gl.uniformMatrix4fv(u_mvp, false, new Float32Array(mvp.m));
+    gl.uniformMatrix4fv(u_model, false, new Float32Array(model.m));
+
+    gl.clearColor(0.07,0.07,0.09,1); gl.clearDepth(1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.bindVertexArray(vao);
+    gl.drawElements(gl.TRIANGLES, g.indices.length, gl.UNSIGNED_SHORT, 0);
+
+    if (!frame._checked){ frame._checked=true; T.ok(w>0&&h>0,'canvas sized'); }
+  };
+
+  onResize(()=>frame(performance.now()));
+  rafLoop(frame);
+}
+
+/* =============================== WebGPU =============================== */
+async function startWebGPU() {
+  setMode('WebGPU');
+  const { device, context, format } = await setupWebGPU(canvas, { alphaMode: 'opaque' });
+
+  const g = createCubeGeometry();
+  const mk = (arr, usage) => {
+    const b = device.createBuffer({ size: arr.byteLength, usage, mappedAtCreation: true });
+    new arr.constructor(b.getMappedRange()).set(arr);
+    b.unmap(); return b;
+  };
+  const vboPos = mk(g.positions, GPUBufferUsage.VERTEX);
+  const vboCol = mk(g.colors,    GPUBufferUsage.VERTEX);
+  const ibo    = mk(g.indices,   GPUBufferUsage.INDEX);
+
+  // ubo = [mvp (64)] + [model (64)] = 128 bytes
+  const ubo = device.createBuffer({ size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+  // Depth target
+  let depthTex = null;
+  function ensureDepth(w, h) {
+    depthTex?.destroy?.();
+    depthTex = device.createTexture({
+      size: { width: w, height: h, depthOrArrayLayers: 1 },
+      format: 'depth24plus',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT
+    });
+  }
+
+  const VS = /* wgsl */`
+  struct UB { mvp: mat4x4<f32>, model: mat4x4<f32> };
+  @group(0) @binding(0) var<uniform> u: UB;
+
+  struct VSIn { @location(0) pos: vec3<f32>, @location(1) col: vec3<f32> };
+  struct VSOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) vcol: vec3<f32>,
+    @location(1) vnrw: vec3<f32>
+  };
+
+  fn faceNormal(p: vec3<f32>) -> vec3<f32> {
+    let ap = abs(p);
+    if (ap.x >= ap.y && ap.x >= ap.z) { return vec3<f32>(sign(p.x), 0.0, 0.0); }
+    if (ap.y >= ap.x && ap.y >= ap.z) { return vec3<f32>(0.0, sign(p.y), 0.0); }
+    return vec3<f32>(0.0, 0.0, sign(p.z));
+  }
+
+  @vertex fn main(in: VSIn) -> VSOut {
+    var o: VSOut;
+    o.clip = u.mvp * vec4<f32>(in.pos, 1.0);
+    let n = faceNormal(in.pos);
+    o.vnrw = normalize((u.model * vec4<f32>(n, 0.0)).xyz);
+    o.vcol = in.col;
+    return o;
+  }`;
+
+  const FS = /* wgsl */`
+  @fragment fn main(@location(0) col: vec3<f32>, @location(1) nrm: vec3<f32>) -> @location(0) vec4<f32> {
+    let L = normalize(vec3<f32>(0.5, 0.8, 0.6));
+    let ndl = max(dot(normalize(nrm), L), 0.0);
+    let ambient = 0.25;
+    let diffuse = 0.75 * ndl;
+    let c = (ambient + diffuse) * col;
+    return vec4<f32>(c, 1.0);
+  }`;
+
+  const pipeline = device.createRenderPipeline({
+    layout: 'auto',
+    vertex: {
+      module: device.createShaderModule({ code: VS }),
+      entryPoint: 'main',
+      buffers: [
+        { arrayStride: 12, attributes: [{ shaderLocation:0, offset:0, format:'float32x3' }] },
+        { arrayStride: 12, attributes: [{ shaderLocation:1, offset:0, format:'float32x3' }] },
+      ]
+    },
+    fragment: {
+      module: device.createShaderModule({ code: FS }),
+      entryPoint: 'main',
+      targets: [{ format }]
+    },
+    primitive: { topology: 'triangle-list' },
+    depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' }
+  });
+
+  const bind = device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [{ binding:0, resource:{ buffer: ubo, offset:0, size:128 } }]
+  });
+
+  const frame = (t=0) => {
+    const { w, h } = fitCanvasToDisplaySize(canvas);
+    resizeWebGPU(canvas, context, device, format, { alphaMode:'opaque' }, w, h);
+    ensureDepth(w, h);
+
+    const proj = perspective(Math.PI/3, w/Math.max(1,h), 0.1, 100);
+    const view = orbit.getViewMatrix();
+    const model = Mat4.rotationY((t*0.001)%(2.0*Math.PI));
+    const mvp = new Mat4(proj.m).multiply(view).multiply(model);
+
+    const buf = new Float32Array(32); // 32 * 4B = 128B
+    buf.set(new Float32Array(mvp.m), 0);
+    buf.set(new Float32Array(model.m), 16);
+    device.queue.writeBuffer(ubo, 0, buf.buffer, buf.byteOffset, buf.byteLength);
+
+    const enc = device.createCommandEncoder();
+    const color = context.getCurrentTexture().createView();
+    const depth = depthTex.createView();
+    const pass = enc.beginRenderPass({
+      colorAttachments: [{ view: color, clearValue: { r:.07,g:.07,b:.09,a:1 }, loadOp:'clear', storeOp:'store' }],
+      depthStencilAttachment: { view: depth, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' }
+    });
+    pass.setPipeline(pipeline); pass.setBindGroup(0, bind);
+    pass.setVertexBuffer(0, vboPos); pass.setVertexBuffer(1, vboCol);
+    pass.setIndexBuffer(ibo, 'uint16'); pass.drawIndexed(g.indices.length);
+    pass.end();
+    device.queue.submit([enc.finish()]);
+
+    if (!frame._checked) { frame._checked=true; T.ok(w>0&&h>0,'canvas sized'); }
+  };
+
+  onResize(()=>frame(performance.now()));
+  rafLoop(frame);
+}
+
+/* ------------------------ Boot & fallback logic ------------------------ */
+if (Flags.backend === 'webgl2') {
+  startWebGL2();
+} else if (Flags.backend === 'webgpu') {
+  try { await startWebGPU(); } catch (e) { console.warn('Forced WebGPU failed; fallback:', e); startWebGL2(); }
+} else {
+  if (hasWebGPU()) {
+    try { await startWebGPU(); } catch (e) { console.warn('WebGPU init failed; fallback:', e); startWebGL2(); }
+  } else {
+    startWebGL2();
+  }
+}
+</script>

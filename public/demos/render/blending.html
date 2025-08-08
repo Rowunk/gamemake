@@ -1,0 +1,267 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Blending Modes (WebGPU/WebGL2)</title>
+<link rel="stylesheet" href="../../lib/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E">
+<canvas id="canvas"></canvas>
+<div class="panel">
+  <b>Blending Modes</b> · <span id="mode" class="small"></span>
+  · Blend
+  <select id="blend">
+    <option value="opaque">opaque</option>
+    <option value="alpha" selected>alpha</option>
+    <option value="add">add</option>
+    <option value="multiply">multiply</option>
+  </select>
+  · Front α <input id="alpha" type="range" min="0" max="1" step="0.01" value="0.6">
+  <span id="alphav" class="small">0.60</span>
+</div>
+
+<script type="module">
+import { fitCanvasToDisplaySize, onResize, rafLoop, hasWebGPU, hasWebGL2 } from '../../lib/harness.js';
+import { setupWebGPU } from '../../../src/gfx/webgpu_runtime.js';
+import { resizeWebGPU, resizeWebGL2 } from '../../../src/gfx/resize.js';
+import { Flags, makeTester, applyHeadless } from '../../lib/testkit.js';
+
+applyHeadless(Flags.headless);
+const T = makeTester('render/blending');
+
+const canvas = document.getElementById('canvas');
+const modeEl = document.getElementById('mode');
+const blendEl = document.getElementById('blend');
+const alphaEl = document.getElementById('alpha');
+const alphaV  = document.getElementById('alphav');
+alphaV.textContent = Number(alphaEl.value).toFixed(2);
+
+const setMode = (m)=>{ modeEl.textContent = m; if (Flags.expect) T.eq(m.toLowerCase(), Flags.expect, 'backend matches ?expect'); };
+
+// Shared quad geometry (two triangles, -1..1 box scaled in shader)
+const QUAD = new Float32Array([
+  -1,-1,  1,-1,  1, 1,
+  -1,-1,  1, 1, -1, 1,
+]);
+
+/* =============================== WebGL2 =============================== */
+function startWebGL2() {
+  if (!hasWebGL2(canvas)) { setMode('None'); T.ok(false,'WebGL2 unavailable'); return; }
+  setMode('WebGL2');
+  const gl = canvas.getContext('webgl2', { antialias:false, depth:false });
+
+  const VS = `#version 300 es
+  layout(location=0) in vec2 a_pos;
+  uniform vec4 u_v0; // aspect, angle, ox, oy
+  uniform vec4 u_v1; // sx, sy, _, _
+  void main(){
+    float c = cos(u_v0.y), s = sin(u_v0.y);
+    mat2 R = mat2(c, -s, s, c);
+    vec2 p = R * (a_pos * u_v1.xy) + u_v0.zw;
+    gl_Position = vec4(p.x * u_v0.x, p.y, 0.0, 1.0);
+  }`;
+  const FS = `#version 300 es
+  precision mediump float;
+  uniform vec4 u_col; // rgba (non-premultiplied)
+  out vec4 frag;
+  void main(){ frag = u_col; }`;
+
+  const sh = (t,s)=>{ const o=gl.createShader(t); gl.shaderSource(o,s); gl.compileShader(o);
+    if(!gl.getShaderParameter(o,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)||'compile'); return o; };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog)||'link');
+  gl.useProgram(prog);
+
+  const u_v0  = gl.getUniformLocation(prog,'u_v0');
+  const u_v1  = gl.getUniformLocation(prog,'u_v1');
+  const u_col = gl.getUniformLocation(prog,'u_col');
+
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, QUAD, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+  function applyBlend(mode){
+    if (mode === 'opaque') { gl.disable(gl.BLEND); return; }
+    gl.enable(gl.BLEND);
+    if (mode === 'alpha') {
+      gl.blendEquationSeparate(gl.FUNC_ADD, gl.FUNC_ADD);
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    } else if (mode === 'add') {
+      gl.blendEquationSeparate(gl.FUNC_ADD, gl.FUNC_ADD);
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE, gl.ONE, gl.ONE);
+    } else if (mode === 'multiply') {
+      gl.blendEquationSeparate(gl.FUNC_ADD, gl.FUNC_ADD);
+      gl.blendFuncSeparate(gl.DST_COLOR, gl.ZERO, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    }
+  }
+
+  blendEl.addEventListener('change', ()=>applyBlend(blendEl.value));
+  alphaEl.addEventListener('input', ()=>{ alphaV.textContent = Number(alphaEl.value).toFixed(2); });
+
+  function frame(t=0){
+    const { w, h } = fitCanvasToDisplaySize(canvas);
+    resizeWebGL2(canvas, gl, w, h);
+    gl.viewport(0,0,w,h);
+    gl.clearColor(0.07,0.07,0.10,1); gl.clear(gl.COLOR_BUFFER_BIT);
+
+    applyBlend(blendEl.value);
+
+    // Back quad (red, opaque), centered
+    gl.uniform4f(u_v0, h/Math.max(1,w), 0.0, 0.0, 0.0);
+    gl.uniform4f(u_v1, 0.8, 0.6, 0.0, 0.0);
+    gl.uniform4f(u_col, 1.0, 0.2, 0.2, 1.0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // Front quad (blue, animated), over background
+    const a = Number(alphaEl.value);
+    gl.uniform4f(u_v0, h/Math.max(1,w), t*0.001, 0.15, 0.10);
+    gl.uniform4f(u_v1, 0.7, 0.5, 0.0, 0.0);
+    gl.uniform4f(u_col, 0.1, 0.6, 1.0, a);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    if(!frame._checked){ frame._checked=true; T.ok(w>0&&h>0,'canvas sized'); }
+  }
+  onResize(()=>frame(performance.now()));
+  rafLoop(frame);
+}
+
+/* =============================== WebGPU =============================== */
+async function startWebGPU() {
+  setMode('WebGPU');
+  const { device, context, format } = await setupWebGPU(canvas, { alphaMode: 'opaque' });
+
+  const vbo = device.createBuffer({ size: QUAD.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+  new Float32Array(vbo.getMappedRange()).set(QUAD); vbo.unmap();
+
+  // UBO layout: v0(aspect, angle, ox, oy), v1(sx, sy, _, _), col(r,g,b,a)
+  const UBO_SIZE = 16 * 3; // 3 x vec4 = 48 bytes
+  const ubo = device.createBuffer({ size: UBO_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+  const VS = /* wgsl */`
+  struct U { v0: vec4<f32>, v1: vec4<f32>, col: vec4<f32> };
+  @group(0) @binding(0) var<uniform> u: U;
+
+  struct VSIn { @location(0) p: vec2<f32> };
+  struct VSOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) color: vec4<f32>
+  };
+
+  @vertex fn main(in: VSIn) -> VSOut {
+    let c = cos(u.v0.y); let s = sin(u.v0.y);
+    let R = mat2x2<f32>(c, -s, s, c);
+    let q = (R * (in.p * u.v1.xy)) + u.v0.zw;
+    var o: VSOut;
+    o.clip = vec4<f32>(q.x * u.v0.x, q.y, 0.0, 1.0);
+    o.color = u.col;
+    return o;
+  }`;
+
+  const FS = /* wgsl */`
+  @fragment fn main(@location(0) c: vec4<f32>) -> @location(0) vec4<f32> {
+    return c;
+  }`;
+
+  function blendState(mode){
+    if (mode === 'opaque') return undefined;
+    if (mode === 'alpha') {
+      return {
+        color: { srcFactor:'src-alpha', dstFactor:'one-minus-src-alpha', operation:'add' },
+        alpha: { srcFactor:'one',       dstFactor:'one-minus-src-alpha', operation:'add' }
+      };
+    }
+    if (mode === 'add') {
+      return {
+        color: { srcFactor:'src-alpha', dstFactor:'one', operation:'add' },
+        alpha: { srcFactor:'one',       dstFactor:'one', operation:'add' }
+      };
+    }
+    if (mode === 'multiply') {
+      return {
+        color: { srcFactor:'dst', dstFactor:'zero', operation:'add' },
+        alpha: { srcFactor:'one', dstFactor:'one-minus-src-alpha', operation:'add' }
+      };
+    }
+    return undefined;
+  }
+
+  const pipelines = new Map();
+  function getPipeline(mode){
+    if (pipelines.has(mode)) return pipelines.get(mode);
+    const blend = blendState(mode);
+    const pipeline = device.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module: device.createShaderModule({ code: VS }), entryPoint: 'main',
+        buffers: [{ arrayStride: 8, attributes: [{ shaderLocation:0, offset:0, format:'float32x2' }] }] },
+      fragment: { module: device.createShaderModule({ code: FS }), entryPoint: 'main',
+        targets: [{ format, blend }] },
+      primitive: { topology: 'triangle-list' }
+    });
+    pipelines.set(mode, pipeline);
+    return pipeline;
+  }
+
+  const bindLayout = getPipeline(blendEl.value).getBindGroupLayout(0);
+  let bind = device.createBindGroup({ layout: bindLayout, entries:[{ binding:0, resource:{ buffer: ubo, offset:0, size: UBO_SIZE } }] });
+  blendEl.addEventListener('change', ()=>{ /* pipeline changes automatically via getPipeline() */ });
+
+  alphaEl.addEventListener('input', ()=>{ alphaV.textContent = Number(alphaEl.value).toFixed(2); });
+
+  function writeUniforms(aspect, angle, ox, oy, sx, sy, r, g, b, a){
+    const buf = new Float32Array(12);
+    buf.set([aspect, angle, ox, oy], 0);
+    buf.set([sx, sy, 0, 0], 4);
+    buf.set([r, g, b, a], 8);
+    device.queue.writeBuffer(ubo, 0, buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+
+  function frame(t=0){
+    const { w, h } = fitCanvasToDisplaySize(canvas);
+    resizeWebGPU(canvas, context, device, format, { alphaMode:'opaque' }, w, h);
+
+    const enc  = device.createCommandEncoder();
+    const view = context.getCurrentTexture().createView();
+    const pass = enc.beginRenderPass({
+      colorAttachments: [{ view, clearValue: { r:.07, g:.07, b:.10, a:1 }, loadOp:'clear', storeOp:'store' }]
+    });
+
+    // Back quad (red, opaque) — draw first with opaque pipeline
+    let p = getPipeline('opaque');
+    pass.setPipeline(p); pass.setBindGroup(0, bind);
+    pass.setVertexBuffer(0, vbo);
+    writeUniforms(h/Math.max(1,w), 0.0, 0.0, 0.0, 0.8, 0.6, 1.0, 0.2, 0.2, 1.0);
+    pass.draw(6);
+
+    // Front quad (blue, blended) — second with selected blend pipeline
+    const a = Number(alphaEl.value);
+    p = getPipeline(blendEl.value);
+    pass.setPipeline(p); pass.setBindGroup(0, bind);
+    pass.setVertexBuffer(0, vbo);
+    writeUniforms(h/Math.max(1,w), t*0.001, 0.15, 0.10, 0.7, 0.5, 0.1, 0.6, 1.0, a);
+    pass.draw(6);
+
+    pass.end();
+    device.queue.submit([enc.finish()]);
+
+    if (!frame._checked){ frame._checked=true; T.ok(w>0&&h>0,'canvas sized'); }
+  }
+
+  onResize(()=>frame(performance.now()));
+  rafLoop(frame);
+}
+
+/* ------------------------ Boot & fallback logic ------------------------ */
+if (Flags.backend === 'webgl2') {
+  startWebGL2();
+} else if (Flags.backend === 'webgpu') {
+  try { await startWebGPU(); } catch (e) { console.warn('Forced WebGPU failed; fallback:', e); startWebGL2(); }
+} else {
+  if (hasWebGPU()) {
+    try { await startWebGPU(); } catch (e) { console.warn('WebGPU init failed; fallback:', e); startWebGL2(); }
+  } else {
+    startWebGL2();
+  }
+}
+</script>

@@ -1,0 +1,106 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Clear (WebGPU/WebGL2)</title>
+<link rel="stylesheet" href="../../lib/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E">
+<canvas id="canvas"></canvas>
+<div class="panel">
+  <b>Clear</b> · <span id="mode" class="small"></span> ·
+  <label>Color <input id="color" type="color" value="#1a66ff"></label>
+</div>
+<script type="module">
+import {
+  fitCanvasToDisplaySize, onResize, rafLoop, hasWebGPU, hasWebGL2, hexToRGBA1
+} from '../../lib/harness.js';
+import { beginRenderPassDescriptor, applyGLClear } from '../../../src/gfx/clearcolor.js';
+import { resizeWebGPU, resizeWebGL2 } from '../../../src/gfx/resize.js';
+import { setupWebGPU, onDeviceLost } from '../../../src/gfx/webgpu_runtime.js';
+import { Flags, makeTester, applyHeadless } from '../../lib/testkit.js';
+
+applyHeadless(Flags.headless);
+const t = makeTester('render/clear');
+
+const canvas  = document.getElementById('canvas');
+const modeEl  = document.getElementById('mode');
+const colorEl = document.getElementById('color');
+
+function actualizeMode(m){ modeEl.textContent = m; if (Flags.expect) t.eq(m.toLowerCase(), Flags.expect, 'backend matches ?expect'); }
+
+/** WebGL2 fallback path */
+function startWebGL2() {
+  if (!hasWebGL2(canvas)) {
+    modeEl.textContent = 'No WebGPU/WebGL2';
+    t.ok(false, 'WebGL2 unavailable'); return;
+  }
+  actualizeMode('WebGL2');
+  const gl = canvas.getContext('webgl2', { antialias: false });
+  let firstFrameDone = false;
+
+  const frame = () => {
+    const { w, h } = fitCanvasToDisplaySize(canvas);
+    resizeWebGL2(canvas, gl, w, h);
+    const rgba = hexToRGBA1(colorEl.value);
+    applyGLClear(gl, rgba);
+
+    if (!firstFrameDone) {
+      firstFrameDone = true;
+      // Pixel probe in the center
+      const px = new Uint8Array(4);
+      gl.readPixels((w/2)|0, (h/2)|0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      const expect = rgba.map(v => Math.round(v * 255));
+      t.close(px[0], expect[0], 2, 'R close');
+      t.close(px[1], expect[1], 2, 'G close');
+      t.close(px[2], expect[2], 2, 'B close');
+      t.ok(w > 0 && h > 0, 'canvas sized');
+    }
+  };
+
+  onResize(frame);
+  colorEl.addEventListener('input', frame);
+  rafLoop(frame);
+}
+
+/** Prefer WebGPU, fall back to WebGL2 on failure (unless forced) */
+async function startWebGPU() {
+  actualizeMode('WebGPU');
+  const { device, context, format } = await setupWebGPU(canvas, { alphaMode: 'opaque' });
+
+  onDeviceLost(device, info => {
+    console.warn('WebGPU device lost:', info);
+    t.ok(false, `device lost: ${info?.reason || 'unknown'}`);
+  });
+
+  const frame = () => {
+    const { w, h } = fitCanvasToDisplaySize(canvas);
+    resizeWebGPU(canvas, context, device, format, { alphaMode: 'opaque' }, w, h);
+
+    const enc  = device.createCommandEncoder();
+    const view = context.getCurrentTexture().createView();
+    const pass = enc.beginRenderPass(beginRenderPassDescriptor(view, hexToRGBA1(colorEl.value)));
+    pass.end(); device.queue.submit([enc.finish()]);
+
+    // A couple of sanity checks once
+    if (!frame._checked) {
+      frame._checked = true;
+      t.ok(w > 0 && h > 0, 'canvas sized');
+    }
+  };
+
+  onResize(frame);
+  colorEl.addEventListener('input', frame);
+  rafLoop(frame);
+}
+
+// Boot with optional ?backend override
+if (Flags.backend === 'webgl2') {
+  startWebGL2();
+} else if (Flags.backend === 'webgpu') {
+  try { await startWebGPU(); } catch (e) { console.warn(e); startWebGL2(); }
+} else {
+  if (hasWebGPU()) {
+    try { await startWebGPU(); } catch (e) { console.warn('WebGPU init failed; falling back to WebGL2:', e); startWebGL2(); }
+  } else {
+    startWebGL2();
+  }
+}
+</script>

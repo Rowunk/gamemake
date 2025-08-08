@@ -1,0 +1,322 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Render to Texture (WebGPU/WebGL2)</title>
+<link rel="stylesheet" href="../../lib/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E">
+<canvas id="canvas"></canvas>
+<div class="panel">
+  <b>Render to Texture</b> · <span id="mode" class="small"></span>
+  · Effect
+  <select id="effect">
+    <option value="none" selected>none</option>
+    <option value="grayscale">grayscale</option>
+    <option value="invert">invert</option>
+    <option value="vignette">vignette</option>
+  </select>
+</div>
+
+<script type="module">
+import { fitCanvasToDisplaySize, onResize, rafLoop, hasWebGPU, hasWebGL2 } from '../../lib/harness.js';
+import { setupWebGPU } from '../../../src/gfx/webgpu_runtime.js';
+import { resizeWebGPU, resizeWebGL2 } from '../../../src/gfx/resize.js';
+import { Flags, makeTester, applyHeadless } from '../../lib/testkit.js';
+
+applyHeadless(Flags.headless);
+const t = makeTester('render/rtt');
+
+const canvas = document.getElementById('canvas');
+const modeEl = document.getElementById('mode');
+const effEl  = document.getElementById('effect');
+const setMode = (m)=>{ modeEl.textContent = m; if (Flags.expect) t.eq(m.toLowerCase(), Flags.expect, 'backend matches ?expect'); };
+
+/* =============================================================================
+   WebGL2 PATH
+============================================================================= */
+function startWebGL2() {
+  if (!hasWebGL2(canvas)) { setMode('None'); t.ok(false, 'WebGL2 unavailable'); return; }
+  setMode('WebGL2');
+  const gl = canvas.getContext('webgl2', { antialias:false });
+
+  // --- Fullscreen-triangle VS (no VBOs) ---
+  const VS_FSQ = `#version 300 es
+  out vec2 v_uv;
+  void main(){
+    // p = (0,0), (2,0), (0,2)
+    vec2 p = vec2( (gl_VertexID << 1) & 2, gl_VertexID & 2 );
+    v_uv = p * 0.5;
+    gl_Position = vec4( p*vec2(2.0,-2.0) + vec2(-1.0,1.0), 0.0, 1.0 );
+  }`;
+
+  // --- Offscreen pattern FS ---
+  const FS_PATTERN = `#version 300 es
+  precision mediump float;
+  in vec2 v_uv; out vec4 frag;
+  uniform float u_time;
+  // simple radial-bands pattern
+  void main(){
+    vec2 q = v_uv - 0.5;
+    float r = length(q);
+    float band = 0.5 + 0.5 * cos(10.0*r - u_time*1.2);
+    vec3 col = mix(vec3(0.10,0.30,0.90), vec3(1.00,0.85,0.20), band);
+    // slight rotation animation via uv warp
+    float a = atan(q.y,q.x) + u_time*0.2;
+    col *= 0.8 + 0.2*cos(a*5.0);
+    frag = vec4(col, 1.0);
+  }`;
+
+  // --- Post-process FS (sample offscreen & apply effect) ---
+  const FS_POST = `#version 300 es
+  precision mediump float;
+  in vec2 v_uv; out vec4 frag;
+  uniform sampler2D u_tex;
+  uniform int u_mode; // 0=none,1=gray,2=invert,3=vignette
+  void main(){
+    vec3 c = texture(u_tex, v_uv).rgb;
+    if (u_mode == 1) {
+      float g = dot(c, vec3(0.299, 0.587, 0.114));
+      c = vec3(g);
+    } else if (u_mode == 2) {
+      c = vec3(1.0) - c;
+    } else if (u_mode == 3) {
+      float v = smoothstep(0.9, 0.4, length(v_uv - 0.5) * 1.2);
+      c *= v;
+    }
+    frag = vec4(c, 1.0);
+  }`;
+
+  const compile = (type, src) => {
+    const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh)||'compile failed'); return sh;
+  };
+  const linkProg = (vs, fs) => {
+    const p = gl.createProgram(); gl.attachShader(p, compile(gl.VERTEX_SHADER, vs)); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p); if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p)||'link failed'); return p;
+  };
+
+  const progPattern = linkProg(VS_FSQ, FS_PATTERN);
+  const u_time      = gl.getUniformLocation(progPattern, 'u_time');
+
+  const progPost = linkProg(VS_FSQ, FS_POST);
+  const u_mode   = gl.getUniformLocation(progPost, 'u_mode');
+  const u_tex    = gl.getUniformLocation(progPost, 'u_tex');
+
+  // --- Offscreen target (FBO + color texture) ---
+  let fbo = null, colorTex = null, _w = 0, _h = 0;
+  function ensureTarget(w, h) {
+    if (w === _w && h === _h && fbo && colorTex) return;
+    _w = w; _h = h;
+    if (colorTex) gl.deleteTexture(colorTex);
+    if (fbo) gl.deleteFramebuffer(fbo);
+    colorTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, colorTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    fbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, colorTex, 0);
+    const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    t.ok(ok, 'FBO complete');
+  }
+
+  function effectIndex() {
+    switch (effEl.value) {
+      case 'grayscale': return 1;
+      case 'invert':    return 2;
+      case 'vignette':  return 3;
+      default:          return 0;
+    }
+  }
+
+  const frame = (timeMs=0) => {
+    const { w, h } = fitCanvasToDisplaySize(canvas);
+    resizeWebGL2(canvas, gl, w, h);
+    ensureTarget(w, h);
+
+    // Pass 1: render procedural pattern to offscreen
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.viewport(0, 0, w, h);
+    gl.disable(gl.BLEND);
+    gl.useProgram(progPattern);
+    gl.uniform1f(u_time, timeMs * 0.001);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // Pass 2: sample offscreen to the swapchain with effect
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, w, h);
+    gl.clearColor(0.07, 0.07, 0.10, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(progPost);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, colorTex);
+    gl.uniform1i(u_tex, 0);
+    gl.uniform1i(u_mode, effectIndex());
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    if (!frame._checked) { frame._checked = true; t.ok(w>0&&h>0, 'canvas sized'); }
+  };
+
+  onResize(frame); rafLoop(frame);
+}
+
+/* =============================================================================
+   WebGPU PATH
+============================================================================= */
+async function startWebGPU() {
+  setMode('WebGPU');
+  const { device, context, format } = await setupWebGPU(canvas, { alphaMode:'opaque' });
+
+  // Uniforms: time (f32), mode (u32 in f32 slot), padding
+  const ubo = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+  // Fullscreen-triangle shaders (no vertex buffers)
+  const VS_FSQ = /* wgsl */`
+  struct VSOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> };
+  @vertex fn main(@builtin(vertex_index) vid: u32) -> VSOut {
+    let p = vec2<f32>(f32((vid << 1u) & 2u), f32(vid & 2u));
+    var o: VSOut;
+    o.clip = vec4<f32>(p*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0), 0.0, 1.0);
+    o.uv = p * 0.5;
+    return o;
+  }`;
+
+  const FS_PATTERN = /* wgsl */`
+  struct U { time: f32, mode: f32, _p0: f32, _p1: f32; };
+  @group(0) @binding(0) var<uniform> u: U;
+  @fragment fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let q = uv - vec2<f32>(0.5, 0.5);
+    let r = length(q);
+    let band = 0.5 + 0.5 * cos(10.0*r - u.time*1.2);
+    var col = mix(vec3<f32>(0.10,0.30,0.90), vec3<f32>(1.00,0.85,0.20), band);
+    let a = atan2(q.y, q.x) + u.time*0.2;
+    col = col * (0.8 + 0.2 * cos(a*5.0));
+    return vec4<f32>(col, 1.0);
+  }`;
+
+  const FS_POST = /* wgsl */`
+  struct U { time: f32, mode: f32, _p0: f32, _p1: f32; };
+  @group(0) @binding(0) var<uniform> u: U;
+  @group(0) @binding(1) var samp: sampler;
+  @group(0) @binding(2) var tex: texture_2d<f32>;
+  @fragment fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    var c = textureSample(tex, samp, uv).rgb;
+    if (u.mode > 0.5 && u.mode < 1.5) {
+      let g = dot(c, vec3<f32>(0.299, 0.587, 0.114));
+      c = vec3<f32>(g, g, g);
+    } else if (u.mode > 1.5 && u.mode < 2.5) {
+      c = vec3<f32>(1.0,1.0,1.0) - c;
+    } else if (u.mode > 2.5) {
+      let v = smoothstep(0.9, 0.4, length(uv - vec2<f32>(0.5,0.5)) * 1.2);
+      c = c * v;
+    }
+    return vec4<f32>(c, 1.0);
+  }`;
+
+  // Pipelines
+  const pipePattern = device.createRenderPipeline({
+    layout:'auto',
+    vertex:{ module: device.createShaderModule({code:VS_FSQ}), entryPoint:'main' },
+    fragment:{ module: device.createShaderModule({code:FS_PATTERN}), entryPoint:'main', targets:[{ format:'rgba8unorm' }] },
+    primitive:{ topology:'triangle-list' }
+  });
+
+  let pipePost = device.createRenderPipeline({
+    layout:'auto',
+    vertex:{ module: device.createShaderModule({code:VS_FSQ}), entryPoint:'main' },
+    fragment:{ module: device.createShaderModule({code:FS_POST}), entryPoint:'main', targets:[{ format }] },
+    primitive:{ topology:'triangle-list' }
+  });
+
+  const samp = device.createSampler({ magFilter:'linear', minFilter:'linear' });
+
+  // Offscreen color target
+  let targetTex = null, targetView = null, _w = 0, _h = 0;
+  function ensureTarget(w, h) {
+    if (w === _w && h === _h && targetTex) return;
+    _w = w; _h = h;
+    targetTex?.destroy?.();
+    targetTex = device.createTexture({
+      size:{ width:w, height:h, depthOrArrayLayers:1 },
+      format:'rgba8unorm',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    targetView = targetTex.createView();
+  }
+
+  const mkBindPattern = () => device.createBindGroup({
+    layout: pipePattern.getBindGroupLayout(0),
+    entries: [ { binding:0, resource:{ buffer: ubo } } ]
+  });
+  const mkBindPost = () => device.createBindGroup({
+    layout: pipePost.getBindGroupLayout(0),
+    entries: [
+      { binding:0, resource:{ buffer: ubo } },
+      { binding:1, resource: samp },
+      { binding:2, resource: targetView },
+    ]
+  });
+  let bindPattern = mkBindPattern();
+  let bindPost = null;
+
+  function effectIndex() {
+    switch (effEl.value) {
+      case 'grayscale': return 1;
+      case 'invert':    return 2;
+      case 'vignette':  return 3;
+      default:          return 0;
+    }
+  }
+
+  const frame = (timeMs=0) => {
+    const { w, h } = fitCanvasToDisplaySize(canvas);
+    resizeWebGPU(canvas, context, device, format, { alphaMode:'opaque' }, w, h);
+    ensureTarget(w, h);
+    // Rebuild post bind group if target changed
+    if (!bindPost) bindPost = mkBindPost();
+
+    device.queue.writeBuffer(ubo, 0, new Float32Array([ timeMs*0.001, effectIndex(), 0, 0 ]));
+
+    const enc = device.createCommandEncoder();
+
+    // Pass 1: to offscreen
+    {
+      const pass = enc.beginRenderPass({
+        colorAttachments: [{ view: targetView, clearValue:{r:.0,g:.0,b:.0,a:1}, loadOp:'clear', storeOp:'store' }]
+      });
+      pass.setPipeline(pipePattern);
+      pass.setBindGroup(0, bindPattern);
+      pass.draw(3);
+      pass.end();
+    }
+
+    // Pass 2: to swapchain, sampling offscreen
+    {
+      const view = context.getCurrentTexture().createView();
+      const pass = enc.beginRenderPass({
+        colorAttachments: [{ view, clearValue:{ r:.07, g:.07, b:.10, a:1 }, loadOp:'clear', storeOp:'store' }]
+      });
+      pass.setPipeline(pipePost);
+      pass.setBindGroup(0, bindPost);
+      pass.draw(3);
+      pass.end();
+    }
+
+    device.queue.submit([enc.finish()]);
+    if (!frame._checked) { frame._checked = true; t.ok(w>0&&h>0, 'canvas sized'); }
+  };
+
+  onResize(() => { bindPost = null; frame(performance.now()); });
+  effEl.addEventListener('change', () => frame(performance.now()));
+  rafLoop(frame);
+}
+
+/* ---------- Boot with ?backend override & fallback ---------- */
+if (Flags.backend === 'webgl2') {
+  startWebGL2();
+} else if (Flags.backend === 'webgpu') {
+  try { await startWebGPU(); } catch (e) { console.warn(e); startWebGL2(); }
+} else {
+  if (hasWebGPU()) { try { await startWebGPU(); } catch (e) { console.warn(e); startWebGL2(); } }
+  else startWebGL2();
+}
+</script>
