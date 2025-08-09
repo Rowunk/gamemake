@@ -2,30 +2,75 @@
 'use strict';
 
 /**
- * Decide GPU backend without touching the DOM (pure function for testability).
+ * @file Backend selection helpers.
+ * Provides a single exported function `selectBackend` used to choose
+ * between WebGPU and WebGL2 based on availability and required features.
+ */
+
+/**
+ * Minimal shape for WebGPU env.
+ * @typedef {Object} WebGpuEnv
+ * @property {boolean} available
+ * @property {Set<string>|string[]|undefined} [features]
+ */
+
+/**
+ * Minimal shape for WebGL2 env.
+ * @typedef {Object} WebGl2Env
+ * @property {boolean} available
+ */
+
+/**
+ * Environment passed to {@link selectBackend}.
+ * @typedef {Object} BackendEnv
+ * @property {WebGpuEnv} [webgpu]
+ * @property {WebGl2Env} [webgl2]
+ */
+
+/**
+ * Return true if `features` contains every element in `required`.
+ * Accepts Set<string> or string[]; case-sensitive.
+ * @param {Set<string>|string[]|undefined} features
+ * @param {string[]} required
+ */
+function hasAllFeatures(features, required) {
+  if (!required || required.length === 0) return true;
+  if (!features) return required.length === 0;
+
+  if (Array.isArray(features)) {
+    const s = new Set(features);
+    return required.every((f) => s.has(f));
+  }
+  // Assume Set-like
+  return required.every((f) => features.has(f));
+}
+
+/**
+ * Choose a graphics backend based on availability and (for WebGPU) required features.
  *
- * Selection policy:
- * 1) Prefer WebGPU if available AND all required features are present.
- * 2) Else fallback to WebGL2 if available.
- * 3) Else throw.
+ * Preference order:
+ *  1) 'webgpu' if env.webgpu.available && all required features are present
+ *  2) 'webgl2' if env.webgl2.available
+ *  3) throw Error if neither is available
  *
- * @param {Object} env
- * @param {{available:boolean, features?:Set<string>}} [env.webgpu]
- * @param {{available:boolean}} [env.webgl2]
- * @param {string[]} [requiredFeatures=[]]
+ * @param {BackendEnv} env
+ * @param {string[]} [requiredFeatures=[]] WebGPU features that must be present if selecting WebGPU
  * @returns {'webgpu'|'webgl2'}
+ * @throws {Error} When no supported GPU backend is available
  */
 export function selectBackend(env, requiredFeatures = []) {
-  const gpu = env?.webgpu;
-  const gl2 = env?.webgl2;
+  const gpu = env && env.webgpu;
+  const gl2 = env && env.webgl2;
 
-  if (gpu?.available) {
-    const feats = gpu.features instanceof Set ? gpu.features : new Set();
-    const ok = requiredFeatures.every(f => feats.has(f));
-    if (ok) return 'webgpu';
+  // Prefer WebGPU when available and feature requirements are satisfied
+  if (gpu && gpu.available && hasAllFeatures(gpu.features, requiredFeatures)) {
+    return 'webgpu';
   }
 
-  if (gl2?.available) return 'webgl2';
+  // Fallback to WebGL2 if available
+  if (gl2 && gl2.available) {
+    return 'webgl2';
+  }
 
-  throw new Error('No supported GPU backend');
+  throw new Error('No supported GPU backend available (need WebGPU or WebGL2)');
 }

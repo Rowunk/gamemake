@@ -1,5 +1,19 @@
-// src/gfx/sampler.js
+// @ts-check
 'use strict';
+
+/**
+ * WebGPU-like sampler descriptor shape (docs/test-friendly).
+ * Optional fields are declared with square brackets so JSDoc parses them.
+ * @typedef {Object} SamplerDescriptor
+ * @property {string} addressModeU
+ * @property {string} addressModeV
+ * @property {string} addressModeW
+ * @property {string} magFilter
+ * @property {string} minFilter
+ * @property {string} [mipmapFilter]
+ * @property {number} [lodMinClamp]
+ * @property {number} [lodMaxClamp]
+ */
 
 /**
  * Return a WebGPU-style sampler descriptor for common presets.
@@ -10,12 +24,11 @@
  *  - 'nearestRepeat'   : nearest min/mag, repeat
  *  - 'mipmapLinear'    : linear min/mag/mipmap, clamp-to-edge, LOD[0..32]
  *
- * @param {string} kind
- * @returns {{addressModeU:string,addressModeV:string,addressModeW:string,
- *            magFilter:string,minFilter:string,mipmapFilter?:string,
- *            lodMinClamp?:number,lodMaxClamp?:number}}
+ * @param {'linearClamp'|'linearRepeat'|'nearestClamp'|'nearestRepeat'|'mipmapLinear'} [kind='linearClamp']
+ * @returns {SamplerDescriptor}
  */
 export function createSamplerPreset(kind = 'linearClamp') {
+  /** @type {Omit<SamplerDescriptor, 'magFilter'|'minFilter'|'mipmapFilter'|'lodMinClamp'|'lodMaxClamp'>} */
   const base = {
     addressModeU: 'clamp-to-edge',
     addressModeV: 'clamp-to-edge',
@@ -27,15 +40,21 @@ export function createSamplerPreset(kind = 'linearClamp') {
       return { ...base, magFilter: 'linear', minFilter: 'linear' };
     case 'linearRepeat':
       return {
-        addressModeU: 'repeat', addressModeV: 'repeat', addressModeW: 'repeat',
-        magFilter: 'linear', minFilter: 'linear'
+        addressModeU: 'repeat',
+        addressModeV: 'repeat',
+        addressModeW: 'repeat',
+        magFilter: 'linear',
+        minFilter: 'linear',
       };
     case 'nearestClamp':
       return { ...base, magFilter: 'nearest', minFilter: 'nearest' };
     case 'nearestRepeat':
       return {
-        addressModeU: 'repeat', addressModeV: 'repeat', addressModeW: 'repeat',
-        magFilter: 'nearest', minFilter: 'nearest'
+        addressModeU: 'repeat',
+        addressModeV: 'repeat',
+        addressModeW: 'repeat',
+        magFilter: 'nearest',
+        minFilter: 'nearest',
       };
     case 'mipmapLinear':
       return {

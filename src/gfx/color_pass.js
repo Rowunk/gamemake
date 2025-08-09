@@ -1,4 +1,4 @@
-// src/gfx/color_pass.js
+// @ts-check
 'use strict';
 
 /**
@@ -8,7 +8,7 @@
  */
 
 // Vertex shader: pass-through position
-export const WGSL_COLOR_VERT = /* wgsl */`
+export const WGSL_COLOR_VERT = /* wgsl */ `
 struct VSIn {
   @location(0) position : vec2<f32>,
 };
@@ -26,7 +26,7 @@ fn main(in : VSIn) -> VSOut {
 `;
 
 // Fragment shader: solid color from uniform buffer
-export const WGSL_COLOR_FRAG = /* wgsl */`
+export const WGSL_COLOR_FRAG = /* wgsl */ `
 struct Color {
   color : vec4<f32>,
 };
@@ -42,20 +42,24 @@ fn main() -> @location(0) vec4<f32> {
 /**
  * Describe a minimal uniform-buffer layout for the color.
  * Note: for testability we use strings (e.g., 'fragment') instead of GPUShaderStage enums.
+ *
+ * @returns {object} descriptor shape compatible with tests
  */
 export function colorUniformLayout() {
-  return {
+  return /** @type {object} */ ({
     entries: [
       {
         binding: 0,
-        visibility: 'fragment',        // tests assert this exact string
+        // tests assert this exact string value:
+        visibility: 'fragment',
         buffer: {
           type: 'uniform',
-          minBindingSize: 16,          // vec4<f32>
+          // 4 * float32
+          minBindingSize: 16,
         },
       },
     ],
-  };
+  });
 }
 
 /**
@@ -63,40 +67,41 @@ export function colorUniformLayout() {
  * Node tests verify the *shape* only; at runtime you replace the module placeholders
  * with actual GPUShaderModules.
  *
- * @param {string} format e.g. 'rgba8unorm'
+ * @param {string} [format='rgba8unorm'] Texture format for the color target.
+ * @returns {object} pipeline descriptor shape compatible with tests
  */
 export function buildColorPipelineDescriptor(format = 'rgba8unorm') {
-  return {
+  return /** @type {object} */ ({
     layout: 'auto',
     vertex: {
-      module: { code: WGSL_COLOR_VERT },   // placeholder for tests
+      // placeholders for tests (real runtime would pass compiled GPUShaderModule)
+      module: { code: WGSL_COLOR_VERT },
       entryPoint: 'main',
       buffers: [
         {
-          arrayStride: 2 * 4,              // vec2<f32>
-          attributes: [
-            { shaderLocation: 0, offset: 0, format: 'float32x2' },
-          ],
+          arrayStride: 2 * 4, // vec2<f32>
+          attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }],
         },
       ],
     },
     fragment: {
-      module: { code: WGSL_COLOR_FRAG },   // placeholder for tests
+      module: { code: WGSL_COLOR_FRAG },
       entryPoint: 'main',
       targets: [{ format }],
     },
     primitive: { topology: 'triangle-list' },
-  };
+  });
 }
 
 /**
  * Create a bind-group descriptor that binds the given uniform GPU buffer at binding(0).
  * The descriptor includes the matching layout (shape only for tests).
  *
- * @param {any} buffer a GPUBuffer-like identity (tests use a placeholder object)
+ * @param {object} buffer A GPUBuffer-like identity (tests use a placeholder object).
+ * @returns {object} bind group descriptor shape compatible with tests
  */
 export function makeColorBindGroupDescriptor(buffer) {
-  return {
+  return /** @type {object} */ ({
     layout: colorUniformLayout(),
     entries: [
       {
@@ -108,18 +113,21 @@ export function makeColorBindGroupDescriptor(buffer) {
         },
       },
     ],
-  };
+  });
 }
 
 /**
- * Deterministic RGBA color varying with time t (seconds).
- * Returns components in [0,1], with alpha fixed at 1.
+ * Deterministic RGBA color varying with time `t` (seconds).
+ * Components are clamped to [0, 1]. Alpha is fixed at 1.
  *
- * @param {number} t
- * @returns {[number, number, number, number]}
+ * @param {number} t Seconds.
+ * @returns {number[]} RGBA array: [r, g, b, a] with length 4, each in [0, 1].
+ *
+ * @example
+ * const [r, g, b, a] = computeColorAt(1.0);
  */
 export function computeColorAt(t) {
-  const r = 0.5 + 0.5 * Math.sin(t * 1.000);
+  const r = 0.5 + 0.5 * Math.sin(t * 1.0);
   const g = 0.5 + 0.5 * Math.sin(t * 1.618 + 1.0);
   const b = 0.5 + 0.5 * Math.sin(t * 2.414 + 2.0);
   const a = 1.0;

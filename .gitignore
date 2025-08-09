@@ -4,3 +4,8 @@ dist/
 # OS/editor
 .DS_Store
 *.swp
+
+node_modules/
+npm-debug.log*
+coverage/
+docs/
