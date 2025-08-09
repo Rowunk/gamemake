@@ -1,0 +1,52 @@
+{
+  // ==== Formatting ====
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.formatOnSave": true,
+  "editor.formatOnPaste": true,
+  "editor.formatOnType": false,
+
+  // Per-language overrides (keeps Prettier in charge)
+  "[javascript]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+  "[json]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+  "[markdown]": { "editor.defaultFormatter": "esbenp.prettier-vscode" },
+
+  // ==== Lint & quick-fixes on save ====
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": true,
+    "source.organizeImports": true
+  },
+  "eslint.validate": ["javascript", "markdown"],
+
+  // Let ESLint/TS handle diagnostics; avoid duplicate/builtin ones
+  "javascript.validate.enable": false,
+  "typescript.validate.enable": false,
+
+  // ==== Type checking via JSDoc / @ts-check ====
+  // We prefer explicit // @ts-check per-file, but enable tooling niceties:
+  "javascript.suggestionActions.enabled": true,
+  "javascript.inlayHints.parameterNames.enabled": "literals",
+  "javascript.inlayHints.variableTypes.enabled": true,
+  "javascript.inlayHints.propertyDeclarationTypes.enabled": true,
+  "javascript.inlayHints.functionLikeReturnTypes.enabled": true,
+
+  // ==== Files & whitespace ====
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+
+  // ==== Markdown authoring ====
+  "markdownlint.config": {
+    "MD013": { "line_length": 100, "ignore_code_blocks": true },
+    "MD024": false
+  },
+  "markdown.extension.toc.levels": "2..4",
+  "markdown.preview.doubleClickToSwitchToEditor": true,
+
+  // ==== Visuals ====
+  "editor.rulers": [100],
+  "editor.tabSize": 2,
+  "editor.renderWhitespace": "boundary",
+
+  // ==== WGSL/GLSL helpers ====
+  "wgsl-analyzer.diagnostics.nagaParsing": true
+}

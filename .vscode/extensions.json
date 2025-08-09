@@ -1,0 +1,15 @@
+{
+  "recommendations": [
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+    "EditorConfig.EditorConfig",
+    "yzhang.markdown-all-in-one",
+    "DavidAnson.vscode-markdownlint",
+    "slevesque.shader",
+    "wgsl-analyzer",
+    "eamodio.gitlens",
+    "vivaxy.vscode-conventional-commits",
+    "hbenl.vscode-test-explorer",
+    "hbenl.vscode-test-adapter"
+  ]
+}
