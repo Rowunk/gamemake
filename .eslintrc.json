@@ -1,0 +1,13 @@
+{
+  "env": { "es2022": true, "node": true, "browser": true },
+  "extends": ["eslint:recommended"],
+  "parserOptions": { "sourceType": "module" },
+  "rules": {
+    "no-unused-vars": ["error", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
+    "no-implicit-globals": "error",
+    "no-var": "error",
+    "prefer-const": "error",
+    "eqeqeq": "error",
+    "curly": "error"
+  }
+}

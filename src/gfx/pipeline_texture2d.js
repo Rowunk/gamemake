@@ -2,10 +2,10 @@
 'use strict';
 
 /**
- * WGSL: textured 2D pipeline (pos+uv, MVP uniform, sampler+texture).
+ * WGSL: textured 2D pipeline (pos+uv in TWO vertex buffers, MVP uniform, sampler+texture).
  * Vertex inputs:
- *   @location(0) position: vec3<f32>
- *   @location(1) uv: vec2<f32>
+ *   @location(0) position: vec3<f32>  // buffer 0, stride 12
+ *   @location(1) uv:       vec2<f32>  // buffer 1, stride 8
  * Bindings (group 0):
  *   binding(0) => var<uniform> uMVP: mat4x4<f32>
  *   binding(1) => sampler
@@ -40,13 +40,13 @@ export const WGSL_TEX2D_FRAG = /* wgsl */`
 
 @fragment
 fn main(@location(0) vUV : vec2<f32>) -> @location(0) vec4<f32> {
-  // Sample directly; gamma/space management intentionally omitted for minimal pipeline.
+  // Sample directly; upload path already matches UV orientation.
   return textureSample(uTex, uSampler, vUV);
 }
 `;
 
 /**
- * Pipeline descriptor (layout 'auto'), two vertex buffers: pos (float32x3), uv (float32x2).
+ * Pipeline descriptor (layout 'auto'), TWO vertex buffers: pos (float32x3), uv (float32x2).
  * Triangle list topology.
  * @param {GPUTextureFormat|string} colorFormat
  */
@@ -60,20 +60,20 @@ export function buildTexture2DPipelineDescriptor(colorFormat = 'rgba8unorm') {
         // Position buffer: float32x3 tightly packed
         {
           arrayStride: 12,
-          attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }]
+          attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }],
         },
         // UV buffer: float32x2 tightly packed
         {
           arrayStride: 8,
-          attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x2' }]
-        }
-      ]
+          attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x2' }],
+        },
+      ],
     },
     fragment: {
       module: { code: WGSL_TEX2D_FRAG },
       entryPoint: 'main',
-      targets: [{ format: colorFormat }]
+      targets: [{ format: colorFormat }],
     },
-    primitive: { topology: 'triangle-list' }
+    primitive: { topology: 'triangle-list' },
   };
 }

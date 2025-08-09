@@ -14,6 +14,8 @@ import { setupWebGPU } from '../../../src/gfx/webgpu_runtime.js';
 import { resizeWebGPU, resizeWebGL2 } from '../../../src/gfx/resize.js';
 import { createTexturedQuadGeometry } from '../../../src/gfx/mesh_quad.js';
 import { uploadTextureRGBA8WebGPU, uploadTextureRGBA8WebGL2 } from '../../../src/gfx/texture_upload.js';
+import { computeMipCount } from '../../../src/gfx/texture.js';
+import { makeMipGenerator } from '../../../src/gfx/mipgen.js';
 import { Flags, makeTester, makeRng, applyHeadless } from '../../lib/testkit.js';
 
 applyHeadless(Flags.headless);
@@ -35,6 +37,18 @@ async function startWebGPU() {
 
   const checker = makeCheckerRGBA8(256,256,8);
   const { texture } = uploadTextureRGBA8WebGPU(device, checker);
+
+  // NEW: generate full mip chain once for WebGPU
+  {
+    const levels = computeMipCount(checker.width, checker.height);
+    if (levels > 1) {
+      const gen = makeMipGenerator(device, { format: 'rgba8unorm' });
+      const enc = device.createCommandEncoder();
+      gen.generate(enc, texture, checker.width, checker.height, levels);
+      device.queue.submit([enc.finish()]);
+    }
+  }
+
   const view = texture.createView();
   const sampler = device.createSampler({ magFilter:'linear', minFilter:'linear', mipmapFilter:'linear', addressModeU:'repeat', addressModeV:'repeat' });
 
@@ -99,14 +113,14 @@ async function startWebGPU() {
     { binding:2, resource:view },
   ]});
 
-  function frame(t = 0) {
+  function frame(t0 = 0) {
     const { w, h } = fitCanvasToDisplaySize(canvas);
     resizeWebGPU(canvas, context, device, format, { alphaMode:'opaque' }, w, h);
     const n = parseInt(countEl.value, 10);
     countV.textContent = String(n);
     for (let i = 0; i < n; i++) inst[i*5+4] += 0.01 + (i % 7) * 0.0002;
     device.queue.writeBuffer(instBuf, 0, inst, 0, n * 5);
-    writeUniform(h / w, t * 1e-3);
+    writeUniform(h / w, t0 * 1e-3);
 
     const enc = device.createCommandEncoder();
     const rtv = context.getCurrentTexture().createView();

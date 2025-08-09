@@ -50,3 +50,58 @@ export function createCubeGeometry() {
 
   return { positions, colors, indices };
 }
+
+/**
+ * Create a textured unit cube with UV coordinates for proper texture mapping.
+ * Unlike createCubeGeometry() which has per-vertex colors, this provides UV coords.
+ * 
+ * Returns:
+ * - positions: 8 vertices * 3 components (xyz)  
+ * - uvs: 8 vertices * 2 components (uv)
+ * - indices: 36 indices for 12 triangles
+ */
+export function createTexturedCubeGeometry() {
+  // 8 vertices in standard cube layout
+  const positions = new Float32Array([
+    // x,   y,   z
+    -1, -1, -1, // 0: left-bottom-back
+     1, -1, -1, // 1: right-bottom-back  
+     1,  1, -1, // 2: right-top-back
+    -1,  1, -1, // 3: left-top-back
+    -1, -1,  1, // 4: left-bottom-front
+     1, -1,  1, // 5: right-bottom-front
+     1,  1,  1, // 6: right-top-front
+    -1,  1,  1, // 7: left-top-front
+  ]);
+
+  // Simple UV mapping - each vertex gets a UV coordinate
+  // This creates a basic box mapping where each face gets the full [0,1] UV range
+  const uvs = new Float32Array([
+    0, 0, // 0
+    1, 0, // 1
+    1, 1, // 2  
+    0, 1, // 3
+    1, 0, // 4
+    0, 0, // 5
+    0, 1, // 6
+    1, 1, // 7
+  ]);
+
+  // Same triangle winding as the color cube for consistency
+  const indices = new Uint16Array([
+    // +Z face (front)
+    4, 5, 6,  4, 6, 7,
+    // -Z face (back)
+    1, 0, 3,  1, 3, 2,
+    // +X face (right)  
+    5, 1, 2,  5, 2, 6,
+    // -X face (left)
+    0, 4, 7,  0, 7, 3,
+    // +Y face (top)
+    3, 7, 6,  3, 6, 2,
+    // -Y face (bottom)
+    0, 1, 5,  0, 5, 4,
+  ]);
+
+  return { positions, uvs, indices };
+}

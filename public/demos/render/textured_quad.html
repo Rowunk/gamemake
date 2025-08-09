@@ -22,6 +22,8 @@ import { uploadTextureRGBA8WebGPU, uploadTextureRGBA8WebGL2 } from '../../../src
 import { createTexturedQuadGeometry } from '../../../src/gfx/mesh_quad.js';
 import { buildTexture2DPipelineDescriptor, WGSL_TEX2D_VERT, WGSL_TEX2D_FRAG } from '../../../src/gfx/pipeline_texture2d.js';
 import { createSamplerPreset } from '../../../src/gfx/sampler.js';
+import { computeMipCount } from '../../../src/gfx/texture.js';
+import { makeMipGenerator } from '../../../src/gfx/mipgen.js';
 import { Flags, makeTester, applyHeadless } from '../../lib/testkit.js';
 
 applyHeadless(Flags.headless);
@@ -92,6 +94,18 @@ async function startWebGPU() {
   const { device, context, format } = await setupWebGPU(canvas, { alphaMode: 'opaque' });
 
   const { texture } = uploadTextureRGBA8WebGPU(device, checker);
+
+  // NEW: build the full mip chain once (needed when using mipmapped samplers)
+  {
+    const levels = computeMipCount(checker.width, checker.height);
+    if (levels > 1) {
+      const gen = makeMipGenerator(device, { format: 'rgba8unorm' });
+      const enc = device.createCommandEncoder();
+      gen.generate(enc, texture, checker.width, checker.height, levels);
+      device.queue.submit([enc.finish()]);
+    }
+  }
+
   const view = texture.createView();
 
   const makeSampler = (kind) => device.createSampler(createSamplerPreset(kind));

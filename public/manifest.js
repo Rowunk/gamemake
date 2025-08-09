@@ -14,6 +14,7 @@ export const DEMOS = [
   { id:'3d-cube-depth',           title:'Indexed Cube + Depth (WebGPU/WebGL2)', path:'./demos/3d/cube_depth.html',        category:'3D',        backends:['WebGPU','WebGL2'], tags:['depth','mvp'] },
   { id:'3d-lambert',              title:'Lambert-lit Cube (WebGPU/WebGL2)',     path:'./demos/3d/lambert.html',           category:'3D',        backends:['WebGPU','WebGL2'], tags:['lighting','depth'] },
   { id:'3d-instanced-cubes',       title:'Instanced Cubes (WebGPU/WebGL2)',    path:'./demos/3d/instanced_cubes.html',   category:'3D',        backends:['WebGPU','WebGL2'], tags:['instancing','depth','mvp'] },
+  { id:'3d-textured-cube',       title:'Textured Cube + Mipmaps (WebGPU/WebGL2)', path:'./demos/3d/textured_cube.html',     category:'3D',        backends:['WebGPU','WebGL2'], tags:['textures','depth','mipmaps','mvp'] },
 
   // Runtime
   { id:'runtime-device-lost',     title:'Device Lost (WebGPU/WebGL2)',       path:'./demos/runtime/device_lost.html',      category:'Runtime',   backends:['WebGPU','WebGL2'], tags:['robustness'] },

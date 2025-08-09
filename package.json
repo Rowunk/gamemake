@@ -4,13 +4,15 @@
   "description": "Foundations for a browser-native game engine: core math, slab allocator, time; WebGPU/WebGL2 rendering primitives + static demos. No runtime deps.",
   "type": "module",
   "scripts": {
-    "start": "python3 -m http.server 8000",
-    "start:open": "npm run start --silent & sleep 1; (xdg-open http://localhost:8000/public/ || open http://localhost:8000/public/ || start http://localhost:8000/public/ || true)",
-    "serve": "make serve",
-    "serve:open": "make serve-open",
-    "test": "node --test",
+    "serve": "python3 -m http.server 8000",
     "cov": "make cov",
-    "clean": "make clean"
+    "clean": "make clean",
+    "smoke": "node tools/smoke_headless.js",
+    "lint": "eslint src tests --max-warnings=0",
+    "format": "prettier --write .",
+    "typecheck": "tsc -p . --noEmit",
+    "docs": "jsdoc -c jsdoc.json",
+    "test": "node --test"
   },
   "engines": { "node": ">=18" },
   "license": "UNLICENSED",
